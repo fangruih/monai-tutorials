@@ -1,0 +1,7 @@
+{
+    "data_base_dir": "./dataset",
+    "model_dir": "./trained_weights/hcp_ya",
+    "tfevent_path": "./tfevent/hcp_ya",
+    "output_dir": "./output/hcp_ya",
+    "resume_ckpt": false
+}
