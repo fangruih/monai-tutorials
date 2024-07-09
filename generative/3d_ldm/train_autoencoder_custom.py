@@ -1,13 +1,3 @@
-# Copyright (c) MONAI Consortium
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import argparse
 import json
@@ -16,6 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from tqdm import tqdm
 
 import torch
 from generative.losses import PatchAdversarialLoss, PerceptualLoss
@@ -27,8 +18,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
 from utils import KL_loss, define_instance, prepare_dataloader, setup_ddp, print_gpu_memory
-from visualize_image import visualize_one_slice_in_3d_image
+from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory
+from visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
 from create_dataset import *
+from metrics import metrics_mean_mses_psnrs_ssims_mmd
+import wandb
+from wandb import Image
+
 
 
 def main():
@@ -47,6 +43,7 @@ def main():
     )
     parser.add_argument("-g", "--gpus", default=1, type=int, help="number of gpus per node")
     args = parser.parse_args()
+    
 
     # Step 0: configuration
     ddp_bool = args.gpus > 1  # whether to use distributed data parallel
@@ -74,11 +71,17 @@ def main():
         setattr(args, k, v)
     for k, v in config_dict.items():
         setattr(args, k, v)
+        
+    from datetime import datetime
+    # Generate a dynamic name based on the current date and time
+    current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    run_name = f'autoencoder_{current_time}'
+    wandb.init(project=args.wandb_project_name,name=run_name, config=args)
 
     set_determinism(42)
 
     # Step 1: set data loader
-    # size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
+    size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
     # train_loader, val_loader = prepare_dataloader(
     #     args,
     #     args.autoencoder_train["batch_size"],
@@ -91,16 +94,28 @@ def main():
     #     size_divisible=size_divisible,
     #     amp=False,
     # )
-    base_dir = '/home/sijun/meow/data/hcp_new/hcp/registered'
-    train_dataset, val_dataset = create_train_val_datasets(base_dir)
+    base_dir = '/home/sijun/meow/data_new/hcp/registered'
+    # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+    train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+        args,
+        args.autoencoder_train["batch_size"],
+        args.autoencoder_train["patch_size"],
+        base_dir= base_dir,
+        randcrop=True,
+        rank=rank,
+        world_size=world_size,
+        cache=1.0,
+        download=False,
+        size_divisible=size_divisible,
+        amp=False,
+    )
 
-    # Create DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=4)
-    
 
     # Step 2: Define Autoencoder KL network and discriminator
     autoencoder = define_instance(args, "autoencoder_def").to(device)
+    def count_model_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print("count_model_parameters(model)", count_model_parameters(autoencoder))
     discriminator_norm = "INSTANCE"
     discriminator = PatchDiscriminator(
         spatial_dims=args.spatial_dims,
@@ -114,10 +129,20 @@ def main():
         # When using DDP, BatchNorm needs to be converted to SyncBatchNorm.
         discriminator = torch.nn.SyncBatchNorm.convert_sync_batchnorm(discriminator)
 
-    trained_g_path = os.path.join(args.model_dir, "autoencoder.pt")
+    def ensure_directory_exists(path):
+        """ Ensure that the directory exists, and if not, create it. """
+        os.makedirs(path, exist_ok=True)
+
+    # Assuming `args.model_dir` and `current_time` are already defined
+    args.model_dir = os.path.join(args.model_dir, current_time)
+    
+    # Ensure directories exist
+    ensure_directory_exists(args.model_dir)
+    trained_g_path = os.path.join(args.model_dir,"autoencoder.pt")
     trained_d_path = os.path.join(args.model_dir, "discriminator.pt")
-    trained_g_path_last = os.path.join(args.model_dir, "autoencoder_last.pt")
-    trained_d_path_last = os.path.join(args.model_dir, "discriminator_last.pt")
+    trained_g_path_last = os.path.join(args.model_dir,"autoencoder_last.pt")
+    trained_d_path_last = os.path.join(args.model_dir,"discriminator_last.pt")
+    # print("trained_d_path_last", trained_d_path_last)
 
     if rank == 0:
         Path(args.model_dir).mkdir(parents=True, exist_ok=True)
@@ -187,14 +212,18 @@ def main():
             # if ddp, distribute data across n gpus
             train_loader.sampler.set_epoch(epoch)
             val_loader.sampler.set_epoch(epoch)
+        
+        train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+    
         for step, batch in enumerate(train_loader):
             # print("image.shape", batch["image"].shape)
-            # images = batch["image"].to(device)
-            images = batch.to(device)
-            print("images", images.shape)
+            images = batch["image"].to(device)
+            # images = batch.to(device)
+            # print("images", images.shape)
             
             # train Generator part
             optimizer_g.zero_grad(set_to_none=True)
+            # print("images.shape",images.shape)
             reconstruction, z_mu, z_sigma = autoencoder(images)
 
             recons_loss = intensity_loss(reconstruction, images)
@@ -226,32 +255,63 @@ def main():
             # write train loss for each batch into tensorboard
             if rank == 0:
                 total_step += 1
-                tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
-                tensorboard_writer.add_scalar("train_kl_loss_iter", kl_loss, total_step)
-                tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
+                
+                train_metrics = {
+                    "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
+                    "train/kl_loss_iter": kl_loss.item(),
+                    "train/perceptual_loss_iter": p_loss.item()
+                }
+                # tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
+                # tensorboard_writer.add_scalar("train_kl_loss_iter", kl_loss, total_step)
+                # tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
                 if epoch > autoencoder_warm_up_n_epochs:
-                    tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
-                    tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
-                    tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
+                    train_metrics.update({
+                        "train/adv_loss_iter": generator_loss.item(),
+                        "train/fake_loss_iter": loss_d_fake.item(),
+                        "train/real_loss_iter": loss_d_real.item()
+                    })
+                    # tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
+                    # tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
+                    # tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
+                wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
 
         # validation
         if epoch % val_interval == 0:
             autoencoder.eval()
             val_recon_epoch_loss = 0
+            mses= 0
+            psnrs=0
+            ssims=0
+            mmd =0
             for step, batch in enumerate(val_loader):
                 images = batch["image"].to(device)  # choose only one of Brats channels
                 with torch.no_grad():
                     reconstruction, z_mu, z_sigma = autoencoder(images)
+                    # print("reconstruction", reconstruction.size())
+                    # print("images", images.size())
+                    
                     recons_loss = intensity_loss(
                         reconstruction.float(), images.float()
                     ) + perceptual_weight * loss_perceptual(reconstruction.float(), images.float())
 
+                mses_add,psnrs_add,ssims_add,mmd_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
+                mses= mses+mses_add
+                psnrs= psnrs+psnrs_add
+                ssims= ssims+ssims_add
+                mmd= mmd+mmd_add
                 val_recon_epoch_loss += recons_loss.item()
 
+            mses= mses/(step+1)
+            psnrs= psnrs/(step+1)
+            ssims= ssims/(step+1)
+            mmd= mmd/(step+1)
+            
             val_recon_epoch_loss = val_recon_epoch_loss / (step + 1)
             if rank == 0:
                 # save last model
                 print(f"Epoch {epoch} val_recon_loss: {val_recon_epoch_loss}")
+                
+                
                 if ddp_bool:
                     torch.save(autoencoder.module.state_dict(), trained_g_path_last)
                     torch.save(discriminator.module.state_dict(), trained_d_path_last)
@@ -272,19 +332,41 @@ def main():
                     print("Save trained discriminator to", trained_d_path)
 
                 # write val loss for each epoch into tensorboard
+                val_metrics = {
+                    "val/recon_loss": val_recon_epoch_loss,  # Ensure to use .item() to log scalar values
+                    "val/mses": mses,
+                    "val/psnrs": psnrs,
+                    "val/ssims": ssims,
+                    "val/mmd": mmd,
+                }
+                # wandb.log(log_dict, step=total_step)
                 tensorboard_writer.add_scalar("val_recon_loss", val_recon_epoch_loss, epoch)
-                for axis in range(3):
-                    tensorboard_writer.add_image(
-                        "val_img_" + str(axis),
-                        visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
-                        epoch,
-                    )
-                    tensorboard_writer.add_image(
-                        "val_recon_" + str(axis),
-                        visualize_one_slice_in_3d_image(reconstruction[0, 0, ...], axis).transpose([2, 1, 0]),
-                        epoch,
-                    )
+                wandb.log(val_metrics, step=total_step * args.autoencoder_train["batch_size"])
 
+                for axis in range(3):
+                    # tensorboard_writer.add_image(
+                    #     "val_img_" + str(axis),
+                    #     visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
+                    #     epoch,
+                    # )
+                    # tensorboard_writer.add_image(
+                    #     "val_recon_" + str(axis),
+                    #     visualize_one_slice_in_3d_image(reconstruction[0, 0, ...], axis).transpose([2, 1, 0]),
+                    #     epoch,
+                    # )
+                    
+                    val_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis) #.transpose([2, 1, 0])
+                    val_recon = visualize_one_slice_in_3d_image_greyscale(reconstruction[0, 0, ...], axis) #.transpose([2, 1, 0])
+                    
+                    # print("images.shape",images.shape)
+                    # print("val_img.shape",val_img.shape)
+                    # print("val_recon.shape",val_recon.shape)
+
+                    wandb.log({
+                        f"val/image/img_axis_{axis}": Image(val_img),
+                        f"val/image/recon_axis_{axis}": Image(val_recon)
+                    }, step=total_step*args.autoencoder_train["batch_size"])
+                
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -294,3 +376,5 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     main()
+    wandb.finish()
+

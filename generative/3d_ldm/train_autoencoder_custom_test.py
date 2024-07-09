@@ -30,6 +30,7 @@ from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataload
 from test_utils import *
 from visualize_image import visualize_one_slice_in_3d_image
 from create_dataset import *
+import wandb
 
 
 def main():
@@ -48,6 +49,9 @@ def main():
     )
     parser.add_argument("-g", "--gpus", default=1, type=int, help="number of gpus per node")
     args = parser.parse_args()
+    wandb.init(project=args.wandb_project_name, config=args)
+    wandb.config.update(args)
+
 
     # Step 0: configuration
     ddp_bool = args.gpus > 1  # whether to use distributed data parallel
@@ -86,7 +90,7 @@ def main():
     
     # Step 1: set data loader
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
-    hcp_dataset =  prepare_dataloader_extract_dataset_custom(
+    hcp_dataset,val_dataset =  prepare_dataloader_extract_dataset_custom(
         args,
         args.autoencoder_train["batch_size"],
         args.autoencoder_train["patch_size"],
@@ -100,7 +104,7 @@ def main():
         amp=False,
     )
     print("done hcp")
-    decathlon_dataset= prepare_dataloader_extract_dataset(
+    decathlon_dataset_train,decathlon_dataset_val = prepare_dataloader_extract_dataset(
         args,
         args.autoencoder_train["batch_size"],
         args.autoencoder_train["patch_size"],
@@ -119,7 +123,7 @@ def main():
     
     
     
-    compare_datasets(decathlon_dataset, decathlon_dataset)
+    compare_datasets(decathlon_dataset_train,decathlon_dataset_val)
     print("done compare")
 
 if __name__ == "__main__":

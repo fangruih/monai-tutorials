@@ -47,3 +47,24 @@ def visualize_one_slice_in_3d_image(image, axis: int = 2):
         raise ValueError("axis should be in [0,1,2]")
     draw_img = np.stack([draw_img, draw_img, draw_img], axis=-1)
     return draw_img
+
+def visualize_one_slice_in_3d_image_greyscale(image, axis: int = 2):
+    """
+    Prepare a 2D image slice from a 3D image for visualization.
+    Args:
+        image: image numpy array, sized (H, W, D)
+    """
+    image = convert_to_numpy(image)
+    # draw image
+    center = image.shape[axis] // 2
+    if axis == 0:
+        draw_img = normalize_image_to_uint8(image[center, :, :])
+    elif axis == 1:
+        draw_img = normalize_image_to_uint8(image[:, center, :])
+    elif axis == 2:
+        draw_img = normalize_image_to_uint8(image[:, :, center])
+    else:
+        raise ValueError("axis should be in [0,1,2]")
+    # draw_img = np.stack([draw_img, draw_img, draw_img], axis=-1)
+    # array[..., np.newaxis]
+    return draw_img[..., np.newaxis]

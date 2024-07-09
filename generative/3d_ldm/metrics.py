@@ -37,7 +37,7 @@ def calc_ms_ssims(pred, gt):
     # returns an np array of shape batch
     # NOTE: assumes that gt has the range [0,1]!
     assert pred.shape[0] == gt.shape[0], 'Batch sizes of prediction and gt are different in ms-ssim calculation!'
-    ms_ssim_val = ms_ssim(pred, gt, data_range=1, size_average=False ) #(N,)
+    ms_ssim_val = ms_ssim(pred, gt, data_range=1, size_average=False ,win_size=7) #(N,)
     return ms_ssim_val.detach().cpu().numpy()
 
 
@@ -55,9 +55,28 @@ def calc_mmd(pred, gt):
     xx, yy, zz = torch.mm(x,x.t()), torch.mm(y,y.t()), torch.mm(x,y.t())
     xx = xx - torch.diag(torch.diag(xx))
     yy = yy - torch.diag(torch.diag(yy))
-
+    # print("batch", batch)
+    # print("(batch*(batch-1))", (batch*(batch-1)))
     beta = (1./(batch*(batch-1)))
     gamma = (2./(batch*batch)) 
 
     dist = beta * (torch.sum(xx)+torch.sum(yy)) - gamma * torch.sum(zz)
     return math.sqrt(dist.item()) # number
+
+def metrics_mean_mses_psnrs_ssims_mmd(pred,gt):
+    mses= calc_mses(pred.squeeze(), gt.squeeze())
+    # print("mses", mses)
+    metric_3d_psnrs_from_mses= calc_3d_psnrs_from_mses(mses)
+    # print("psnrs", metric_3d_psnrs_from_mses)
+    ssims= calc_ms_ssims(pred, gt)
+    # print("ssims", ssims)
+    mmd= calc_mmd(pred, gt)
+    # print("mmd", mmd)
+
+    # Calculating the mean for each metric
+    mean_mses = np.mean(mses)
+    mean_psnrs = np.mean(metric_3d_psnrs_from_mses)
+    mean_ssims = np.mean(ssims)
+    # MMD returns a single number already, no need to mean
+    
+    return mean_mses, mean_psnrs, mean_ssims, mmd
