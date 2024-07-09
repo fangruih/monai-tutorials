@@ -30,6 +30,14 @@ from monai.transforms import (
     ScaleIntensityRangePercentilesd,
     Spacingd,
 )
+import torch
+from torch.utils.data import Dataset
+import nibabel as nib
+from pathlib import Path
+
+import random
+from torch.utils.data import DataLoader
+from create_dataset import HCPT1wDataset
 
 
 def setup_ddp(rank, world_size):
@@ -137,6 +145,221 @@ def prepare_dataloader(
     return train_loader, val_loader
 
 
+
+
+def prepare_dataloader_extract_dataset(
+    args,
+    batch_size,
+    patch_size,
+    randcrop=True,
+    rank=0,
+    world_size=1,
+    cache=1.0,
+    download=False,
+    size_divisible=16,
+    amp=False,
+):
+    ddp_bool = world_size > 1
+    channel = args.channel  # 0 = Flair, 1 = T1
+    assert channel in [0, 1, 2, 3], "Choose a valid channel"
+    if randcrop:
+        train_crop_transform = RandSpatialCropd(keys=["image"], roi_size=patch_size, random_size=False)
+        val_patch_size = [int(np.ceil(1.5 * p / size_divisible) * size_divisible) for p in patch_size]
+        print("val_patch_size", val_patch_size)
+    else:
+        train_crop_transform = CenterSpatialCropd(keys=["image"], roi_size=patch_size)
+        val_patch_size = patch_size
+
+    if amp:
+        compute_dtype = torch.float16
+    else:
+        compute_dtype = torch.float32
+
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            train_crop_transform,
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            CenterSpatialCropd(keys=["image"], roi_size=val_patch_size),
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    os.makedirs(args.data_base_dir, exist_ok=True)
+    train_ds = DecathlonDataset(
+        root_dir=args.data_base_dir,
+        task="Task01_BrainTumour",
+        section="training",  # validation
+        cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+        num_workers=8,
+        download=download,  # Set download to True if the dataset hasnt been downloaded yet
+        seed=0,
+        transform=train_transforms,
+    )
+    val_ds = DecathlonDataset(
+        root_dir=args.data_base_dir,
+        task="Task01_BrainTumour",
+        section="validation",  # validation
+        cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+        num_workers=8,
+        download=download,  # Set download to True if the dataset hasnt been downloaded yet
+        seed=0,
+        transform=val_transforms,
+    )
+    if ddp_bool:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds, num_replicas=world_size, rank=rank)
+        # val_sampler = torch.utils.data.distributed.DistributedSampler(val_ds, num_replicas=world_size, rank=rank)
+    else:
+        train_sampler = None
+        # val_sampler = None
+
+    # train_loader = DataLoader(
+    #     train_ds, batch_size=batch_size, shuffle=(not ddp_bool), num_workers=0, pin_memory=False, sampler=train_sampler
+    # )
+    # val_loader = DataLoader(
+    #     val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
+    # )
+    if rank == 0:
+        print(f'Image shape {train_ds[0]["image"].shape}')
+    return train_ds , val_ds
+
+
+def prepare_dataloader_extract_dataset_custom(
+    args,
+    batch_size,
+    patch_size,
+    # base_dir, 
+    all_files,
+    val_ratio=0.2, 
+    seed=42,
+    randcrop=True,
+    rank=0,
+    world_size=1,
+    cache=1.0,
+    download=False,
+    size_divisible=16,
+    amp=False,
+    
+    
+):
+    ddp_bool = world_size > 1
+    channel = args.channel  # 0 = Flair, 1 = T1
+    assert channel in [0, 1, 2, 3], "Choose a valid channel"
+    if randcrop:
+        train_crop_transform = RandSpatialCropd(keys=["image"], roi_size=patch_size, random_size=False)
+        val_patch_size = [int(np.ceil(1.5 * p / size_divisible) * size_divisible) for p in patch_size]
+    else:
+        train_crop_transform = CenterSpatialCropd(keys=["image"], roi_size=patch_size)
+        val_patch_size = patch_size
+
+    if amp:
+        compute_dtype = torch.float16
+    else:
+        compute_dtype = torch.float32
+
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            train_crop_transform,
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            CenterSpatialCropd(keys=["image"], roi_size=val_patch_size),
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    os.makedirs(args.data_base_dir, exist_ok=True)
+    # train_ds = DecathlonDataset(
+    #     root_dir=args.data_base_dir,
+    #     task="Task01_BrainTumour",
+    #     section="training",  # validation
+    #     cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+    #     num_workers=8,
+    #     download=download,  # Set download to True if the dataset hasnt been downloaded yet
+    #     seed=0,
+    #     transform=train_transforms,
+    # )
+    # val_ds = DecathlonDataset(
+    #     root_dir=args.data_base_dir,
+    #     task="Task01_BrainTumour",
+    #     section="validation",  # validation
+    #     cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+    #     num_workers=8,
+    #     download=download,  # Set download to True if the dataset hasnt been downloaded yet
+    #     seed=0,
+    #     transform=val_transforms,
+    # )
+    # base_path = Path(base_dir)
+    # # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+    # all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+    
+    # Shuffle the file list
+    random.seed(seed)
+    random.shuffle(all_files)
+    val_ratio=0.2
+    # Split into train and validation
+    val_size = int(len(all_files) * val_ratio)
+    train_files = all_files[val_size:]
+    val_files = all_files[:val_size]
+    
+    # Create datasets
+    train_ds = HCPT1wDataset(train_files, train_transforms)
+    val_ds = HCPT1wDataset(val_files, val_transforms)
+    
+    if ddp_bool:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds, num_replicas=world_size, rank=rank)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_ds, num_replicas=world_size, rank=rank)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=(not ddp_bool), num_workers=0, pin_memory=False, sampler=train_sampler
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
+    )
+    if rank == 0:
+        print(f'Image shape {train_ds[0]["image"].shape}')
+    return  train_loader, val_loader #train_ds , val_ds #
+
+
+
 def define_instance(args, instance_def_key):
     parser = ConfigParser(vars(args))
     parser.parse(True)
@@ -149,3 +372,107 @@ def KL_loss(z_mu, z_sigma):
         dim=list(range(1, len(z_sigma.shape))),
     )
     return torch.sum(kl_loss) / kl_loss.shape[0]
+
+
+def print_gpu_memory():
+    if torch.cuda.is_available():
+        print(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        print(f"Allocated GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        print(f"Cached GPU memory: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+
+
+
+
+def prepare_dataloader_custom(
+    args,
+    batch_size,
+    patch_size,
+    randcrop=True,
+    rank=0,
+    world_size=1,
+    cache=1.0,
+    download=False,
+    size_divisible=16,
+    amp=False,
+):
+    ddp_bool = world_size > 1
+    channel = args.channel  # 0 = Flair, 1 = T1
+    assert channel in [0, 1, 2, 3], "Choose a valid channel"
+    if randcrop:
+        train_crop_transform = RandSpatialCropd(keys=["image"], roi_size=patch_size, random_size=False)
+        val_patch_size = [int(np.ceil(1.5 * p / size_divisible) * size_divisible) for p in patch_size]
+    else:
+        train_crop_transform = CenterSpatialCropd(keys=["image"], roi_size=patch_size)
+        val_patch_size = patch_size
+
+    if amp:
+        compute_dtype = torch.float16
+    else:
+        compute_dtype = torch.float32
+
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            train_crop_transform,
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Lambdad(keys="image", func=lambda x: x[channel, :, :, :]),
+            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
+            EnsureTyped(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=args.spacing, mode=("bilinear")),
+            CenterSpatialCropd(keys=["image"], roi_size=val_patch_size),
+            ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            EnsureTyped(keys="image", dtype=compute_dtype),
+        ]
+    )
+    os.makedirs(args.data_base_dir, exist_ok=True)
+    train_ds = DecathlonDataset(
+        root_dir=args.data_base_dir,
+        task="Task01_BrainTumour",
+        section="training",  # validation
+        cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+        num_workers=8,
+        download=download,  # Set download to True if the dataset hasnt been downloaded yet
+        seed=0,
+        transform=train_transforms,
+    )
+    val_ds = DecathlonDataset(
+        root_dir=args.data_base_dir,
+        task="Task01_BrainTumour",
+        section="validation",  # validation
+        cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
+        num_workers=8,
+        download=download,  # Set download to True if the dataset hasnt been downloaded yet
+        seed=0,
+        transform=val_transforms,
+    )
+    if ddp_bool:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds, num_replicas=world_size, rank=rank)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_ds, num_replicas=world_size, rank=rank)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=(not ddp_bool), num_workers=0, pin_memory=False, sampler=train_sampler
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
+    )
+    if rank == 0:
+        print(f'Image shape {train_ds[0]["image"].shape}')
+    return train_loader, val_loader
+

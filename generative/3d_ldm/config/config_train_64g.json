@@ -1,5 +1,6 @@
 {
     "wandb_project_name":"VAE_hcp_ya_debug",
+    "dataset_type":"hcp_T1",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],
     "spatial_dims": 3,
@@ -35,7 +36,7 @@
         "kl_weight": 1e-7,
         "recon_loss": "l1",
         "n_epochs": 500,
-        "val_interval": 10
+        "val_interval": 2
     },
     "diffusion_def": {
         "_target_": "generative.networks.nets.DiffusionModelUNet",

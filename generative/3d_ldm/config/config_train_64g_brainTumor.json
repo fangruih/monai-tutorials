@@ -1,6 +1,6 @@
 {
     "wandb_project_name":"VAE_hcp_ya_debug",
-    "dataset_type":"hcp_T1",
+    "dataset_type":"brain_tumor",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],
     "spatial_dims": 3,
@@ -29,14 +29,14 @@
         "with_decoder_nonlocal_attn": false
     },
     "autoencoder_train": {
-        "batch_size": 1,
+        "batch_size": 4,
         "patch_size": [112,128,80],
-        "lr": 5e-6,
+        "lr": 2e-5,
         "perceptual_weight": 0.001,
         "kl_weight": 1e-7,
         "recon_loss": "l1",
-        "n_epochs": 1000,
-        "val_interval": 10
+        "n_epochs": 500,
+        "val_interval": 2
     },
     "diffusion_def": {
         "_target_": "generative.networks.nets.DiffusionModelUNet",
@@ -49,11 +49,11 @@
         "num_res_blocks": 2
     },
     "diffusion_train": {
-        "batch_size": 2,
+        "batch_size": 6,
         "patch_size": [144,176,112],
-        "lr": 5e-6,
-        "n_epochs": 10000,
-        "val_interval": 2
+        "lr": 2e-5,
+        "n_epochs":5000,
+        "val_interval": 5
     },
     "NoiseScheduler": {
         "num_train_timesteps": 1000,

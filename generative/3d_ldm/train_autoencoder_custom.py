@@ -82,33 +82,45 @@ def main():
 
     # Step 1: set data loader
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
-    # train_loader, val_loader = prepare_dataloader(
-    #     args,
-    #     args.autoencoder_train["batch_size"],
-    #     args.autoencoder_train["patch_size"],
-    #     randcrop=True,
-    #     rank=rank,
-    #     world_size=world_size,
-    #     cache=1.0,
-    #     download=False,
-    #     size_divisible=size_divisible,
-    #     amp=False,
-    # )
-    base_dir = '/home/sijun/meow/data_new/hcp/registered'
-    # train_dataset, val_dataset = create_train_val_datasets(base_dir )
-    train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
-        args,
-        args.autoencoder_train["batch_size"],
-        args.autoencoder_train["patch_size"],
-        base_dir= base_dir,
-        randcrop=True,
-        rank=rank,
-        world_size=world_size,
-        cache=1.0,
-        download=False,
-        size_divisible=size_divisible,
-        amp=False,
-    )
+    if args.dataset_type=="brain_tumor":
+    
+        train_loader, val_loader = prepare_dataloader(
+            args,
+            args.autoencoder_train["batch_size"],
+            args.autoencoder_train["patch_size"],
+            randcrop=True,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            download=False,
+            size_divisible=size_divisible,
+            amp=False,
+        )
+        print("len(train_loader)", len(train_loader))
+        print("len(val_loader)", len(val_loader))
+    elif args.dataset_type=="hcp_T1":
+        base_dir = '/home/sijun/meow/data_new/hcp/registered'
+        base_path = Path(base_dir)
+        # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+
+        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+            args,
+            args.autoencoder_train["batch_size"],
+            args.autoencoder_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
+            randcrop=True,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            download=False,
+            size_divisible=size_divisible,
+            amp=False,
+        )
+    else: 
+        raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
 
 
     # Step 2: Define Autoencoder KL network and discriminator
@@ -215,7 +227,8 @@ def main():
         
         train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
     
-        for step, batch in enumerate(train_loader):
+        for step, batch in train_progress_bar:
+            
             # print("image.shape", batch["image"].shape)
             images = batch["image"].to(device)
             # images = batch.to(device)
@@ -252,6 +265,12 @@ def main():
                 loss_d.backward()
                 optimizer_d.step()
 
+            # update progress bar
+            train_progress_bar.set_postfix({
+                'Loss': loss_g.item(),
+                'Recon Loss': recons_loss.item(),
+                'KL Loss': kl_loss.item()
+            })
             # write train loss for each batch into tensorboard
             if rank == 0:
                 total_step += 1
@@ -294,17 +313,19 @@ def main():
                         reconstruction.float(), images.float()
                     ) + perceptual_weight * loss_perceptual(reconstruction.float(), images.float())
 
-                mses_add,psnrs_add,ssims_add,mmd_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
+                # mses_add,psnrs_add,ssims_add,mmd_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
+                mses_add,psnrs_add,ssims_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
+                
                 mses= mses+mses_add
                 psnrs= psnrs+psnrs_add
                 ssims= ssims+ssims_add
-                mmd= mmd+mmd_add
+                # mmd= mmd+mmd_add
                 val_recon_epoch_loss += recons_loss.item()
 
             mses= mses/(step+1)
             psnrs= psnrs/(step+1)
             ssims= ssims/(step+1)
-            mmd= mmd/(step+1)
+            # mmd= mmd/(step+1)
             
             val_recon_epoch_loss = val_recon_epoch_loss / (step + 1)
             if rank == 0:
@@ -337,7 +358,7 @@ def main():
                     "val/mses": mses,
                     "val/psnrs": psnrs,
                     "val/ssims": ssims,
-                    "val/mmd": mmd,
+                    # "val/mmd": mmd,
                 }
                 # wandb.log(log_dict, step=total_step)
                 tensorboard_writer.add_scalar("val_recon_loss", val_recon_epoch_loss, epoch)

@@ -61,6 +61,7 @@ def calc_mmd(pred, gt):
     gamma = (2./(batch*batch)) 
 
     dist = beta * (torch.sum(xx)+torch.sum(yy)) - gamma * torch.sum(zz)
+    print("dist", dist)
     return math.sqrt(dist.item()) # number
 
 def metrics_mean_mses_psnrs_ssims_mmd(pred,gt):
@@ -70,7 +71,7 @@ def metrics_mean_mses_psnrs_ssims_mmd(pred,gt):
     # print("psnrs", metric_3d_psnrs_from_mses)
     ssims= calc_ms_ssims(pred, gt)
     # print("ssims", ssims)
-    mmd= calc_mmd(pred, gt)
+    #mmd= calc_mmd(pred, gt)
     # print("mmd", mmd)
 
     # Calculating the mean for each metric
@@ -79,4 +80,4 @@ def metrics_mean_mses_psnrs_ssims_mmd(pred,gt):
     mean_ssims = np.mean(ssims)
     # MMD returns a single number already, no need to mean
     
-    return mean_mses, mean_psnrs, mean_ssims, mmd
+    return mean_mses, mean_psnrs, mean_ssims #, mmd

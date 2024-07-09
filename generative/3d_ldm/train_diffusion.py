@@ -135,6 +135,9 @@ def main():
 
     # Define Diffusion Model
     unet = define_instance(args, "diffusion_def").to(device)
+    def count_model_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("count_model_parameters(model)", count_model_parameters(unet))
 
     trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
     trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
