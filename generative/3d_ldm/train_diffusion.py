@@ -183,43 +183,47 @@ def main():
         if ddp_bool:
             train_loader.sampler.set_epoch(epoch)
             val_loader.sampler.set_epoch(epoch)
-        for step, batch in enumerate(train_loader):
-            images = batch["image"].to(device)
-            optimizer_diff.zero_grad(set_to_none=True)
+            
+        # for step, batch in enumerate(train_loader):
+        #     images = batch["image"].to(device)
+        #     optimizer_diff.zero_grad(set_to_none=True)
 
-            with autocast(enabled=True):
-                # Generate random noise
-                noise_shape = [images.shape[0]] + list(z.shape[1:])
-                noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
+        #     with autocast(enabled=True):
+        #         # Generate random noise
+                
+        #         noise_shape = [images.shape[0]] + list(z.shape[1:])
+        #         noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
+        #         print("noise", noise.shape)
+        #         print("images", images.shape)
+                
+        #         # Create timesteps
+        #         timesteps = torch.randint(
+        #             0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device
+        #         ).long()
 
-                # Create timesteps
-                timesteps = torch.randint(
-                    0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device
-                ).long()
+        #         # Get model prediction
+        #         if ddp_bool:
+        #             inferer_autoencoder = autoencoder.module
+        #         else:
+        #             inferer_autoencoder = autoencoder
+        #         noise_pred = inferer(
+        #             inputs=images,
+        #             autoencoder_model=inferer_autoencoder,
+        #             diffusion_model=unet,
+        #             noise=noise,
+        #             timesteps=timesteps,
+        #         )
 
-                # Get model prediction
-                if ddp_bool:
-                    inferer_autoencoder = autoencoder.module
-                else:
-                    inferer_autoencoder = autoencoder
-                noise_pred = inferer(
-                    inputs=images,
-                    autoencoder_model=inferer_autoencoder,
-                    diffusion_model=unet,
-                    noise=noise,
-                    timesteps=timesteps,
-                )
+        #         loss = F.mse_loss(noise_pred.float(), noise.float())
 
-                loss = F.mse_loss(noise_pred.float(), noise.float())
+        #     scaler.scale(loss).backward()
+        #     scaler.step(optimizer_diff)
+        #     scaler.update()
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer_diff)
-            scaler.update()
-
-            # write train loss for each batch into tensorboard
-            if rank == 0:
-                total_step += 1
-                tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step)
+        #     # write train loss for each batch into tensorboard
+        #     if rank == 0:
+        #         total_step += 1
+        #         tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step)
 
         # validation
         if epoch % val_interval == 0:
@@ -230,9 +234,13 @@ def main():
                 with autocast(enabled=True):
                     # compute val loss
                     for step, batch in enumerate(val_loader):
+                        
                         images = batch["image"].to(device)
                         noise_shape = [images.shape[0]] + list(z.shape[1:])
                         noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
+                        print("inferer")
+                        print("noise", noise.shape)
+                        print("images", images.shape)
 
                         timesteps = torch.randint(
                             0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device

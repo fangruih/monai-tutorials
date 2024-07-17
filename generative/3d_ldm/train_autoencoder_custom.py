@@ -203,7 +203,10 @@ def main():
     # initialize tensorboard writer
     if rank == 0:
         Path(args.tfevent_path).mkdir(parents=True, exist_ok=True)
-        tensorboard_path = os.path.join(args.tfevent_path, "autoencoder")
+        # tensorboard_path = os.path.join(args.tfevent_path, "autoencoder")
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # tensorboard_path = os.path.join(args.tfevent_path, "diffusion")
+        tensorboard_path = os.path.join(args.tfevent_path, "autoencoder", current_time)
         Path(tensorboard_path).mkdir(parents=True, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_path)
 
@@ -280,18 +283,18 @@ def main():
                     "train/kl_loss_iter": kl_loss.item(),
                     "train/perceptual_loss_iter": p_loss.item()
                 }
-                # tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
-                # tensorboard_writer.add_scalar("train_kl_loss_iter", kl_loss, total_step)
-                # tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
+                tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
+                tensorboard_writer.add_scalar("train_kl_loss_iter", kl_loss, total_step)
+                tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
                 if epoch > autoencoder_warm_up_n_epochs:
                     train_metrics.update({
                         "train/adv_loss_iter": generator_loss.item(),
                         "train/fake_loss_iter": loss_d_fake.item(),
                         "train/real_loss_iter": loss_d_real.item()
                     })
-                    # tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
-                    # tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
-                    # tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
+                    tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
+                    tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
+                    tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
                 wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
 
         # validation
@@ -365,16 +368,16 @@ def main():
                 wandb.log(val_metrics, step=total_step * args.autoencoder_train["batch_size"])
 
                 for axis in range(3):
-                    # tensorboard_writer.add_image(
-                    #     "val_img_" + str(axis),
-                    #     visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
-                    #     epoch,
-                    # )
-                    # tensorboard_writer.add_image(
-                    #     "val_recon_" + str(axis),
-                    #     visualize_one_slice_in_3d_image(reconstruction[0, 0, ...], axis).transpose([2, 1, 0]),
-                    #     epoch,
-                    # )
+                    tensorboard_writer.add_image(
+                        "val_img_" + str(axis),
+                        visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
+                        epoch,
+                    )
+                    tensorboard_writer.add_image(
+                        "val_recon_" + str(axis),
+                        visualize_one_slice_in_3d_image(reconstruction[0, 0, ...], axis).transpose([2, 1, 0]),
+                        epoch,
+                    )
                     
                     val_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis) #.transpose([2, 1, 0])
                     val_recon = visualize_one_slice_in_3d_image_greyscale(reconstruction[0, 0, ...], axis) #.transpose([2, 1, 0])

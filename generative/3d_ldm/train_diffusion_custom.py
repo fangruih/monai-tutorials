@@ -1,18 +1,9 @@
-# Copyright (c) MONAI Consortium
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import argparse
 import json
 import logging
 from pathlib import Path
+from tqdm import tqdm
+
 
 import os
 import sys
@@ -27,9 +18,12 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import define_instance, prepare_dataloader, setup_ddp
+from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom
 from visualize_image import visualize_one_slice_in_3d_image
+from datetime import datetime
 
+import wandb
+from wandb import Image
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Latent Diffusion Model Training")
@@ -73,28 +67,71 @@ def main():
         setattr(args, k, v)
     for k, v in config_dict.items():
         setattr(args, k, v)
-
+        
+    
     set_determinism(42)
 
     # Step 1: set data loader
-    size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) + len(args.diffusion_def["num_channels"]) - 2)
-    train_loader, val_loader = prepare_dataloader(
-        args,
-        args.diffusion_train["batch_size"],
-        args.diffusion_train["patch_size"],
-        randcrop=False,
-        rank=rank,
-        world_size=world_size,
-        cache=1.0,
-        size_divisible=size_divisible,
-        amp=True,
-    )
+    size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
+    if args.dataset_type=="brain_tumor":
+    
+        train_loader, val_loader = prepare_dataloader(
+            args,
+            args.diffusion_train["batch_size"],
+            args.diffusion_train["patch_size"],
+            randcrop=False,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            size_divisible=size_divisible,
+            amp=True,
+        )
+        
+        print("len(train_loader)", len(train_loader))
+        print("len(val_loader)", len(val_loader))
+    elif args.dataset_type=="hcp_ya_T1":
+        base_dir = '/home/sijun/meow/data_new/hcp/registered'
+        base_path = Path(base_dir)
+        # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
 
-    # initialize tensorboard writer
+        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+            args,
+            args.diffusion_train["batch_size"],
+            args.diffusion_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
+            randcrop=False,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            size_divisible=size_divisible,
+            amp=True,
+        )
+        # train_loader=val_loader
+        
+    else: 
+        raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
+
+
+    # initialize tensorboard writer and wandb
     if rank == 0:
         Path(args.tfevent_path).mkdir(parents=True, exist_ok=True)
-        tensorboard_path = os.path.join(args.tfevent_path, "diffusion")
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # tensorboard_path = os.path.join(args.tfevent_path, "diffusion")
+        tensorboard_path = os.path.join(args.tfevent_path, "diffusion", current_time)
+
+        # Ensure the directory exists
+        Path(tensorboard_path).mkdir(parents=True, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_path)
+        
+        
+        # Generate a dynamic name based on the current date and time
+        
+        run_name = f'diffusion_{current_time}'
+        wandb.init(project=args.wandb_project_name,name=run_name, config=args)
+
 
     # Step 2: Define Autoencoder KL network and diffusion model
     # Load Autoencoder KL network
@@ -120,11 +157,18 @@ def main():
             if rank == 0:
                 print(f"Latent feature shape {z.shape}")
                 for axis in range(3):
+                    train_img= visualize_one_slice_in_3d_image(check_data["image"][0, 0, ...], axis)#.transpose([2, 1, 0])
                     tensorboard_writer.add_image(
                         "train_img_" + str(axis),
-                        visualize_one_slice_in_3d_image(check_data["image"][0, 0, ...], axis).transpose([2, 1, 0]),
+                        # visualize_one_slice_in_3d_image(check_data["image"][0, 0, ...], axis).transpose([2, 1, 0]),
+                        train_img.transpose([2, 1, 0]),
                         1,
                     )
+                    
+                    wandb.log({
+                        f"val/image/gt_axis_{axis}": Image(train_img),
+                        
+                    }, step=1)
                 print(f"Scaling factor set to {1/torch.std(z)}")
     scale_factor = 1 / torch.std(z)
     print(f"Rank {rank}: local scale_factor: {scale_factor}")
@@ -135,7 +179,9 @@ def main():
 
     # Define Diffusion Model
     unet = define_instance(args, "diffusion_def").to(device)
-
+    args.model_dir= os.path.join(args.model_dir,current_time)
+    Path(args.model_dir).mkdir(parents=True, exist_ok=True)
+    
     trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
     trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
 
@@ -180,7 +226,10 @@ def main():
         if ddp_bool:
             train_loader.sampler.set_epoch(epoch)
             val_loader.sampler.set_epoch(epoch)
-        for step, batch in enumerate(train_loader):
+        
+        train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+        for step, batch in train_progress_bar:
+        # for step, batch in enumerate(train_loader):
             images = batch["image"].to(device)
             optimizer_diff.zero_grad(set_to_none=True)
 
@@ -217,6 +266,10 @@ def main():
             if rank == 0:
                 total_step += 1
                 tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step)
+                wandb.log({
+                    "train_diffusion_loss_iter": loss.item(),
+                    }, step=total_step * args.diffusion_train["batch_size"])
+            train_progress_bar.set_postfix(loss=loss.item())
 
         # validation
         if epoch % val_interval == 0:
@@ -230,6 +283,10 @@ def main():
                         images = batch["image"].to(device)
                         noise_shape = [images.shape[0]] + list(z.shape[1:])
                         noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
+                        
+                        # print("list(z.shape[1:]", list(z.shape[1:]))
+                        # print("images", images.shape)
+                        # print()
 
                         timesteps = torch.randint(
                             0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device
@@ -240,6 +297,8 @@ def main():
                             inferer_autoencoder = autoencoder.module
                         else:
                             inferer_autoencoder = autoencoder
+                        # print("images", images.shape)
+
                         noise_pred = inferer(
                             inputs=images,
                             autoencoder_model=inferer_autoencoder,
@@ -260,6 +319,9 @@ def main():
                     # write val loss and save best model
                     if rank == 0:
                         tensorboard_writer.add_scalar("val_diffusion_loss", val_recon_epoch_loss, epoch)
+                        wandb.log({
+                            "val_diffusion_loss": val_recon_epoch_loss,
+                            }, step=total_step * args.diffusion_train["batch_size"])
                         print(f"Epoch {epoch} val_diffusion_loss: {val_recon_epoch_loss}")
                         # save last model
                         if ddp_bool:
@@ -286,13 +348,20 @@ def main():
                                 scheduler=scheduler,
                             )
                             for axis in range(3):
+                                synthetic_img= visualize_one_slice_in_3d_image(synthetic_images[0, 0, ...], axis)
                                 tensorboard_writer.add_image(
                                     "val_diff_synimg_" + str(axis),
-                                    visualize_one_slice_in_3d_image(synthetic_images[0, 0, ...], axis).transpose(
-                                        [2, 1, 0]
-                                    ),
+                                    # visualize_one_slice_in_3d_image(synthetic_images[0, 0, ...], axis).transpose(
+                                    #     [2, 1, 0]
+                                    # ),
+                                    synthetic_img.transpose([2, 1, 0]),
                                     epoch,
                                 )
+                                
+                                wandb.log({
+                                        f"val/image/syn_axis_{axis}": Image(synthetic_img),
+                                        
+                                    }, step=total_step*args.diffusion_train["batch_size"])
 
 
 if __name__ == "__main__":

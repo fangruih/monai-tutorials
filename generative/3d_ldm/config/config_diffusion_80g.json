@@ -1,5 +1,5 @@
 {
-    "wandb_project_name":"VAE_hcp_ya_debug",
+    "wandb_project_name":"diffusion_hcp_ya",
     "dataset_type":"hcp_ya_T1",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],
@@ -29,13 +29,13 @@
         "with_decoder_nonlocal_attn": false
     },
     "autoencoder_train": {
-        "batch_size": 4,
+        "batch_size": 5,
         "patch_size": [112,128,80],
-        "lr": 2e-5,
+        "lr": 25e-6,
         "perceptual_weight": 0.001,
         "kl_weight": 1e-7,
         "recon_loss": "l1",
-        "n_epochs": 500,
+        "n_epochs": 1000,
         "val_interval": 2
     },
     "diffusion_def": {
@@ -49,11 +49,11 @@
         "num_res_blocks": 2
     },
     "diffusion_train": {
-        "batch_size": 6,
+        "batch_size": 10,
         "patch_size": [144,176,112],
-        "lr": 2e-5,
-        "n_epochs":5000,
-        "val_interval": 5
+        "lr": 25e-6,
+        "n_epochs": 10000,
+        "val_interval": 2
     },
     "NoiseScheduler": {
         "num_train_timesteps": 1000,

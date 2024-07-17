@@ -1,6 +1,6 @@
 {
-    "wandb_project_name":"VAE_hcp_ya_debug",
-    "dataset_type":"hcp_ya_T1",
+    "wandb_project_name":"diffusion_hcp_ya",
+    "dataset_type":"hcp_T1",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],
     "spatial_dims": 3,

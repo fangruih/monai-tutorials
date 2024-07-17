@@ -1,5 +1,5 @@
 {
-    "wandb_project_name":"VAE_hcp_ya_debug",
+    "wandb_project_name":"vq_vae2",
     "dataset_type":"hcp_ya_T1",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],
@@ -7,7 +7,7 @@
     "image_channels": 1,
     "latent_channels": 8,
     "autoencoder_def": {
-        "_target_": "generative.networks.nets.AutoencoderKL",
+        "_target_": "generative.networks.nets.autoencoderkl_vq2.AutoencoderKL_vq2",
         "spatial_dims": "@spatial_dims",
         "in_channels": "$@image_channels",
         "out_channels": "@image_channels",
@@ -34,6 +34,7 @@
         "lr": 2e-5,
         "perceptual_weight": 0.001,
         "kl_weight": 1e-7,
+        "quantization_weight": 1e-3,
         "recon_loss": "l1",
         "n_epochs": 500,
         "val_interval": 2
@@ -52,8 +53,8 @@
         "batch_size": 6,
         "patch_size": [144,176,112],
         "lr": 2e-5,
-        "n_epochs":5000,
-        "val_interval": 5
+        "n_epochs": 5000,
+        "val_interval": 2
     },
     "NoiseScheduler": {
         "num_train_timesteps": 1000,

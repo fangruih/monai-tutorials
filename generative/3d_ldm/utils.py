@@ -110,7 +110,7 @@ def prepare_dataloader(
     train_ds = DecathlonDataset(
         root_dir=args.data_base_dir,
         task="Task01_BrainTumour",
-        section="training",  # validation
+        section="validation",  # validation
         cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
         num_workers=8,
         download=download,  # Set download to True if the dataset hasnt been downloaded yet
@@ -141,7 +141,8 @@ def prepare_dataloader(
         val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
     )
     if rank == 0:
-        print(f'Image shape {train_ds[0]["image"].shape}')
+        print(f'Training Image shape {train_ds[0]["image"].shape}')
+        print(f'Validation Image shape {val_ds[0]["image"].shape}')
     return train_loader, val_loader
 
 

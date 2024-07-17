@@ -1,0 +1,7 @@
+{
+    "data_base_dir": "./dataset",
+    "model_dir": "./trained_weights/draft_test",
+    "tfevent_path": "./tfevent/draft_test",
+    "output_dir": "./output",
+    "resume_ckpt": false
+}
