@@ -12,6 +12,7 @@
 import os
 from datetime import timedelta
 
+from tqdm import tqdm
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -337,6 +338,8 @@ def prepare_dataloader_extract_dataset_custom(
     val_size = int(len(all_files) * val_ratio)
     train_files = all_files[val_size:]
     val_files = all_files[:val_size]
+    print("train_files, len", len(train_files))
+    print("val_files, len", len(val_files))
     
     # Create datasets
     train_ds = HCPT1wDataset(train_files, train_transforms)
@@ -349,6 +352,7 @@ def prepare_dataloader_extract_dataset_custom(
         train_sampler = None
         val_sampler = None
 
+    print("shuffle for train: ", (not ddp_bool))
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=(not ddp_bool), num_workers=0, pin_memory=False, sampler=train_sampler
     )
@@ -477,3 +481,51 @@ def prepare_dataloader_custom(
         print(f'Image shape {train_ds[0]["image"].shape}')
     return train_loader, val_loader
 
+
+def prepare_file_list(base_dir, type):
+    # hcp_ya data 
+    if type=="T1_all":
+        hcp_ya_dir = base_dir+'hcp_ya/registered'
+        base_path = Path(hcp_ya_dir)
+        hcp_ya_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+        print(f'Number of files in hcp_ya_files: {len(hcp_ya_files)}')
+
+        # openneuro
+        openneuro_T1_dir = base_dir+'openneuro'
+        base_path = Path(openneuro_T1_dir)
+        openneuro_T1_files = list(base_path.rglob('**/*T1*.nii.gz'))
+        print(f'Number of files in openneuro_T1_files: {len(openneuro_T1_files)}')
+        
+        
+        # # ABCD 
+        # abcd_T1_dir = base_dir+'abcd/stru/t1/st2_registered'
+        # base_path = Path(abcd_T1_dir)
+        # abcd_T1_files = list(base_path.rglob('**/*T1w.nii'))
+        # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
+        
+        abcd_T1_dir = base_dir + 'abcd/stru/t1/st2_registered'
+        base_path = Path(abcd_T1_dir)
+
+        # Initialize the list to hold all matching files
+        abcd_T1_files = []
+
+        # Use tqdm to show the progress of file collection
+        for file in tqdm(base_path.rglob('**/*baselineYear1Arm1_run-01_T1w.nii'), desc="Collecting abcd files"):
+            abcd_T1_files.append(file)
+        
+        print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
+        all_files = hcp_ya_files + openneuro_T1_files + abcd_T1_files
+        
+        
+    
+    elif type == "hcp_ya_T1":
+        base_dir = base_dir+'hcp_ya/registered'
+        base_path = Path(base_dir)
+        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+    
+    else:
+        raise ValueError(f"Unsupported dataset type specified: {type}")
+
+    
+    print(f'Total number of files: {len(all_files)}')
+    return all_files

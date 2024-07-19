@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import logging
@@ -17,8 +16,7 @@ from torch.nn import L1Loss, MSELoss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import KL_loss, define_instance, prepare_dataloader, setup_ddp, print_gpu_memory
-from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory
+from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory, prepare_file_list
 from visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
 from create_dataset import *
 from metrics import metrics_mean_mses_psnrs_ssims_mmd
@@ -76,11 +74,21 @@ def main():
     # Generate a dynamic name based on the current date and time
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     run_name = f'vq_vae_{current_time}'
-    wandb.init(project=args.wandb_project_name,name=run_name, config=args)
+    # wandb.init(project=args.wandb_project_name,name=run_name, config=args)
 
     set_determinism(42)
 
     # Step 1: set data loader
+    # Choose base directory base on the cluster storage. 
+    # set up environment variable accordingly e.g. "export CLUSTER_NAME=sc" 
+    cluster_name = os.getenv('CLUSTER_NAME')
+    if cluster_name == 'vassar':
+        base_dir = '/home/sijun/meow/data_new/'
+    elif cluster_name == 'sc':
+        base_dir = '/simurgh/group/mri_data/'
+    else:
+        raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable.')
+
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
     if args.dataset_type=="brain_tumor":
     
@@ -99,11 +107,10 @@ def main():
         print("len(train_loader)", len(train_loader))
         print("len(val_loader)", len(val_loader))
     elif args.dataset_type=="hcp_ya_T1":
-        base_dir = '/home/sijun/meow/data_new/hcp/registered'
+        base_dir = base_dir+'hcp_ya/registered'
         base_path = Path(base_dir)
         # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-
+        all_files = prepare_file_list(base_dir, type = args.dataset_type)
         # train_dataset, val_dataset = create_train_val_datasets(base_dir )
         train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
@@ -119,6 +126,66 @@ def main():
             size_divisible=size_divisible,
             amp=False,
         )
+    
+    elif args.dataset_type=="T1_all":
+        
+        # # hcp_ya data 
+        # hcp_ya_dir = base_dir+'hcp_ya/registered'
+        # base_path = Path(hcp_ya_dir)
+        # hcp_ya_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+        # print(f'Number of files in hcp_ya_files: {len(hcp_ya_files)}')
+
+        # # openneuro
+        # openneuro_T1_dir = base_dir+'openneuro'
+        # base_path = Path(openneuro_T1_dir)
+        # openneuro_T1_files = list(base_path.rglob('**/*T1*.nii.gz'))
+        # print(f'Number of files in openneuro_T1_files: {len(openneuro_T1_files)}')
+        
+        
+        # # # ABCD 
+        # # abcd_T1_dir = base_dir+'abcd/stru/t1/st2_registered'
+        # # base_path = Path(abcd_T1_dir)
+        # # abcd_T1_files = list(base_path.rglob('**/*T1w.nii'))
+        # # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
+        
+        # abcd_T1_dir = base_dir + 'abcd/stru/t1/st2_registered'
+        # base_path = Path(abcd_T1_dir)
+
+        # # Initialize the list to hold all matching files
+        # abcd_T1_files = []
+
+        # # Use tqdm to show the progress of file collection
+        # for file in tqdm(base_path.rglob('**/*baselineYear1Arm1_run-01_T1w.nii'), desc="Collecting abcd files"):
+        #     abcd_T1_files.append(file)
+        
+        # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
+        
+        # all_files = hcp_ya_files + openneuro_T1_files + abcd_T1_files
+        # Print the number of files in each list
+        
+        
+        # Print the total number of files found
+        
+        all_files = prepare_file_list(base_dir=base_dir,type=args.dataset_type)
+        
+        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+            args,
+            args.autoencoder_train["batch_size"],
+            args.autoencoder_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
+            randcrop=True,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            download=False,
+            size_divisible=size_divisible,
+            amp=False,
+        )
+        print(f'Number of batches in train_loader: {len(train_loader)}')
+        print(f'Number of batches in val_loader: {len(val_loader)}')
+    
     else: 
         raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
 
@@ -210,6 +277,8 @@ def main():
         tensorboard_path = os.path.join(args.tfevent_path, "autoencoder", current_time)
         Path(tensorboard_path).mkdir(parents=True, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_path)
+        wandb.init(project=args.wandb_project_name,name=run_name, config=args)
+
 
     # Step 4: training
     autoencoder_warm_up_n_epochs = 5
