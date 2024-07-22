@@ -1,11 +1,15 @@
 import argparse
 import json
 import logging
-
+import time
+time_cur = time.time()  # Record end time for data loader setup
+import torch.autograd.profiler as profiler
+print(f"start loading library : {time_cur:.2f} seconds")
 import os
 import sys
 from pathlib import Path
 from tqdm import tqdm
+from torchsummary import summary
 
 import torch
 from generative.losses import PatchAdversarialLoss, PerceptualLoss
@@ -15,8 +19,9 @@ from monai.utils import set_determinism
 from torch.nn import L1Loss, MSELoss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast
 
-from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory, prepare_file_list
+from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory, prepare_file_list
 from visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
 from create_dataset import *
 from metrics import metrics_mean_mses_psnrs_ssims_mmd
@@ -24,6 +29,9 @@ import wandb
 from wandb import Image
 
 
+
+print(f"end loading library : {time.time()-time_cur:.2f} seconds")
+time_cur = time.time()  # Record end time for data loader setup
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch VAE-GAN training")
@@ -57,7 +65,8 @@ def main():
     torch.cuda.set_device(device)
     print(f"Using {device}")
 
-    print_config()
+    # if rank == 0:
+    #     print_config()
     torch.backends.cudnn.benchmark = True
     torch.set_num_threads(4)
     torch.autograd.set_detect_anomaly(True)
@@ -74,7 +83,8 @@ def main():
     # Generate a dynamic name based on the current date and time
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     run_name = f'vq_vae_{current_time}'
-    # wandb.init(project=args.wandb_project_name,name=run_name, config=args)
+    if rank ==0:
+        wandb.init(project=args.wandb_project_name,name=run_name, config=args)
 
     set_determinism(42)
 
@@ -87,9 +97,60 @@ def main():
     elif cluster_name == 'sc':
         base_dir = '/simurgh/group/mri_data/'
     else:
-        raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable.')
+        raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable. e.g. export CLUSTER=NAME=sc')
 
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
+    # Path to the cached file list
+    file_list_cache = Path(f"{base_dir}/{args.dataset_type}_file_list.json")
+    
+    file_list_start_time = time.time()  # Record end time for data loader setup
+    
+    print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+    # Create the file list only on the main process (rank 0)
+    if rank == 0:
+        if file_list_cache.exists():
+            with open(file_list_cache, 'r') as f:
+                all_files_str = json.load(f)
+                print("Loaded file list from cache.")
+        else:
+            file_list_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+            all_files = prepare_file_list(base_dir=base_dir, type=args.dataset_type)
+            
+            file_list_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_end_time: {file_list_end_time:.2f} seconds")
+            # Convert Path objects to strings for JSON serialization
+            all_files_str = [str(file) for file in all_files]
+            dump_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_start_time: {dump_start_time:.2f} seconds")
+
+            with open(file_list_cache, 'w') as f:
+                json.dump(all_files_str, f)
+                print("Saved file list to cache.")
+            
+            dump_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_end_time: {dump_end_time:.2f} seconds")
+
+        # Convert the file list to a JSON string to broadcast
+        all_files_json = json.dumps(all_files_str)
+    else:
+        all_files_json = None
+    all_files_json_list = [all_files_json]
+    if args.gpus > 1:
+        dist.broadcast_object_list(all_files_json_list, src=0)
+    all_files_json = all_files_json_list[0]
+
+    # Convert the JSON string back to a list
+    all_files_str = json.loads(all_files_json)
+    all_files = [Path(file) for file in all_files_str]
+    
+    
     if args.dataset_type=="brain_tumor":
     
         train_loader, val_loader = prepare_dataloader(
@@ -107,11 +168,7 @@ def main():
         print("len(train_loader)", len(train_loader))
         print("len(val_loader)", len(val_loader))
     elif args.dataset_type=="hcp_ya_T1":
-        base_dir = base_dir+'hcp_ya/registered'
-        base_path = Path(base_dir)
-        # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        all_files = prepare_file_list(base_dir, type = args.dataset_type)
-        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+        
         train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.autoencoder_train["batch_size"],
@@ -129,46 +186,9 @@ def main():
     
     elif args.dataset_type=="T1_all":
         
-        # # hcp_ya data 
-        # hcp_ya_dir = base_dir+'hcp_ya/registered'
-        # base_path = Path(hcp_ya_dir)
-        # hcp_ya_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        # print(f'Number of files in hcp_ya_files: {len(hcp_ya_files)}')
-
-        # # openneuro
-        # openneuro_T1_dir = base_dir+'openneuro'
-        # base_path = Path(openneuro_T1_dir)
-        # openneuro_T1_files = list(base_path.rglob('**/*T1*.nii.gz'))
-        # print(f'Number of files in openneuro_T1_files: {len(openneuro_T1_files)}')
+        # all_files = prepare_file_list(base_dir=base_dir,type=args.dataset_type)
+        # Create the file list only on the main process (rank 0)
         
-        
-        # # # ABCD 
-        # # abcd_T1_dir = base_dir+'abcd/stru/t1/st2_registered'
-        # # base_path = Path(abcd_T1_dir)
-        # # abcd_T1_files = list(base_path.rglob('**/*T1w.nii'))
-        # # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
-        
-        # abcd_T1_dir = base_dir + 'abcd/stru/t1/st2_registered'
-        # base_path = Path(abcd_T1_dir)
-
-        # # Initialize the list to hold all matching files
-        # abcd_T1_files = []
-
-        # # Use tqdm to show the progress of file collection
-        # for file in tqdm(base_path.rglob('**/*baselineYear1Arm1_run-01_T1w.nii'), desc="Collecting abcd files"):
-        #     abcd_T1_files.append(file)
-        
-        # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
-        
-        # all_files = hcp_ya_files + openneuro_T1_files + abcd_T1_files
-        # Print the number of files in each list
-        
-        
-        # Print the total number of files found
-        
-        all_files = prepare_file_list(base_dir=base_dir,type=args.dataset_type)
-        
-        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
         train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.autoencoder_train["batch_size"],
@@ -189,12 +209,11 @@ def main():
     else: 
         raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
 
-
+    print("Finish creating data loader. Start building model. ")
     # Step 2: Define Autoencoder KL network and discriminator
     autoencoder = define_instance(args, "autoencoder_def").to(device)
-    def count_model_parameters(model):
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-    # print("count_model_parameters(model)", count_model_parameters(autoencoder))
+    
+    
     discriminator_norm = "INSTANCE"
     discriminator = PatchDiscriminator(
         spatial_dims=args.spatial_dims,
@@ -267,6 +286,7 @@ def main():
 
     optimizer_g = torch.optim.Adam(params=autoencoder.parameters(), lr=args.autoencoder_train["lr"] * world_size)
     optimizer_d = torch.optim.Adam(params=discriminator.parameters(), lr=args.autoencoder_train["lr"] * world_size)
+    scaler = GradScaler()
 
     # initialize tensorboard writer
     if rank == 0:
@@ -277,9 +297,7 @@ def main():
         tensorboard_path = os.path.join(args.tfevent_path, "autoencoder", current_time)
         Path(tensorboard_path).mkdir(parents=True, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_path)
-        wandb.init(project=args.wandb_project_name,name=run_name, config=args)
-
-
+        
     # Step 4: training
     autoencoder_warm_up_n_epochs = 5
     n_epochs = args.autoencoder_train["n_epochs"]
@@ -291,6 +309,7 @@ def main():
 
     for epoch in range(n_epochs):
         # train
+        print("epoch", epoch)
         autoencoder.train()
         discriminator.train()
         if ddp_bool:
@@ -299,84 +318,98 @@ def main():
             val_loader.sampler.set_epoch(epoch)
         
         train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
-    
-        for step, batch in train_progress_bar:
+        print("after setting progress bar")
+        with profiler.profile(use_cuda=True, record_shapes=True, profile_memory=True) as prof:
             
-            # print("image.shape", batch["image"].shape)
-            images = batch["image"].to(device)
-            # images = batch.to(device)
-            # print("images", images.shape)
-            
-            # train Generator part
-            optimizer_g.zero_grad(set_to_none=True)
-            
-            # reconstruction, z_mu, z_sigma = autoencoder(images)
-            # recons_loss = intensity_loss(reconstruction, images)
-            # kl_loss = KL_loss(z_mu, z_sigma)
-            # p_loss = loss_perceptual(reconstruction.float(), images.float())
-            # loss_g = recons_loss + kl_weight * kl_loss + perceptual_weight * p_loss
-            # Forward pass
-            reconstruction, quantized, quantization_loss, z = autoencoder(images)
-            
-            # Compute losses
-            recons_loss = intensity_loss(reconstruction, images)
-            p_loss = loss_perceptual(reconstruction.float(), images.float())
-            
-            # Combine all losses
-            loss_g = recons_loss + perceptual_weight * p_loss + quantization_weight * quantization_loss
-            
-            
-
-            if epoch > autoencoder_warm_up_n_epochs:
-                logits_fake = discriminator(reconstruction.contiguous().float())[-1]
-                generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
-                loss_g = loss_g + adv_weight * generator_loss
-
-            loss_g.backward()
-            optimizer_g.step()
-
-            if epoch > autoencoder_warm_up_n_epochs:
-                # train Discriminator part
-                optimizer_d.zero_grad(set_to_none=True)
-                logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
-                loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
-                logits_real = discriminator(images.contiguous().detach())[-1]
-                loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
-                discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
-                loss_d = adv_weight * discriminator_loss
-
-                loss_d.backward()
-                optimizer_d.step()
-
-            # update progress bar
-            train_progress_bar.set_postfix({
-                'Loss': loss_g.item(),
-                'Recon Loss': recons_loss.item(),
-                'Quantization Loss': quantization_loss.item()
-            })
-            # write train loss for each batch into tensorboard
-            if rank == 0:
-                total_step += 1
+            for step, batch in train_progress_bar:   
+                # if step ==0 or step==1:
+                #     print("step", step)
+                # else:
+                #     break
+                # print("image.shape", batch["image"].shape)
+                images = batch["image"].to(device)
+                # images = batch.to(device)
+                # print("images", images.shape)
                 
-                train_metrics = {
-                    "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
-                    "train/quantization_loss_iter": quantization_loss.item(),
-                    "train/perceptual_loss_iter": p_loss.item()
-                }
-                tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
-                tensorboard_writer.add_scalar("train_quantization_loss_iter", quantization_loss, total_step)
-                tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
-                if epoch > autoencoder_warm_up_n_epochs:
-                    train_metrics.update({
-                        "train/adv_loss_iter": generator_loss.item(),
-                        "train/fake_loss_iter": loss_d_fake.item(),
-                        "train/real_loss_iter": loss_d_real.item()
-                    })
-                    tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
-                    tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
-                    tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
-                wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
+                # train Generator part
+                optimizer_g.zero_grad(set_to_none=True)
+                
+                
+                # Forward pass
+                reconstruction, quantized, quantization_loss, z = autoencoder(images)
+                
+                # Compute losses
+                recons_loss = intensity_loss(reconstruction, images)
+                p_loss = loss_perceptual(reconstruction.float(), images.float())
+                
+                # Combine all losses
+                loss_g = recons_loss + perceptual_weight * p_loss + quantization_weight * quantization_loss
+            
+            
 
+                if epoch > autoencoder_warm_up_n_epochs:
+                    logits_fake = discriminator(reconstruction.contiguous().float())[-1]
+                    generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
+                    loss_g = loss_g + adv_weight * generator_loss
+
+                loss_g.backward()
+                optimizer_g.step()
+                # scaler.scale(loss_g).backward()
+                # scaler.step(optimizer_g)
+                # scaler.update()
+
+
+                if epoch > autoencoder_warm_up_n_epochs:
+                    # train Discriminator part
+                    optimizer_d.zero_grad(set_to_none=True)
+                   
+                    logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
+                    loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
+                    logits_real = discriminator(images.contiguous().detach())[-1]
+                    loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
+                    discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
+                    loss_d = adv_weight * discriminator_loss
+
+                    loss_d.backward()
+                    optimizer_d.step()
+                    # scaler.scale(loss_d).backward()
+                    # scaler.step(optimizer_d)
+                    # scaler.update()
+
+
+                # update progress bar
+                train_progress_bar.set_postfix({
+                    'Loss': loss_g.item(),
+                    'Recon Loss': recons_loss.item(),
+                    'Quantization Loss': quantization_loss.item()
+                })
+                # write train loss for each batch into tensorboard
+                if rank == 0:
+                    total_step += 1
+                    
+                    train_metrics = {
+                        "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
+                        "train/quantization_loss_iter": quantization_loss.item(),
+                        "train/perceptual_loss_iter": p_loss.item()
+                    }
+                    tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
+                    tensorboard_writer.add_scalar("train_quantization_loss_iter", quantization_loss, total_step)
+                    tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
+                    if epoch > autoencoder_warm_up_n_epochs:
+                        train_metrics.update({
+                            "train/adv_loss_iter": generator_loss.item(),
+                            "train/fake_loss_iter": loss_d_fake.item(),
+                            "train/real_loss_iter": loss_d_real.item()
+                        })
+                        tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
+                        tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
+                        tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
+                    wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
+                torch.cuda.empty_cache()
+        
+        print(prof.key_averages().table(sort_by="cuda_time_total"))
+        print("after printing ")
+                
         # validation
         if epoch % val_interval == 0:
             autoencoder.eval()
@@ -385,8 +418,13 @@ def main():
             psnrs=0
             ssims=0
             mmd =0
-            for step, batch in enumerate(val_loader):
+            val_progress_bar = tqdm(enumerate(val_loader), total=len(val_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+            for step, batch in val_progress_bar:   
+            # for step, batch in enumerate(val_loader):
+                # if step>2:
+                #     break
                 images = batch["image"].to(device)  # choose only one of Brats channels
+                # print(images.shape)
                 with torch.no_grad():
                     # reconstruction, z_mu, z_sigma = autoencoder(images)
                     reconstruction, quantized, quantization_loss, z = autoencoder(images)
@@ -450,7 +488,7 @@ def main():
 
                 for axis in range(3):
                     tensorboard_writer.add_image(
-                        "val_img_" + str(axis),
+                        "val_gt_" + str(axis),
                         visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
                         epoch,
                     )
@@ -468,7 +506,7 @@ def main():
                     # print("val_recon.shape",val_recon.shape)
 
                     wandb.log({
-                        f"val/image/img_axis_{axis}": Image(val_img),
+                        f"val/image/gt_axis_{axis}": Image(val_img),
                         f"val/image/recon_axis_{axis}": Image(val_recon)
                     }, step=total_step*args.autoencoder_train["batch_size"])
                 
@@ -480,6 +518,8 @@ if __name__ == "__main__":
         format="[%(asctime)s.%(msecs)03d][%(levelname)5s](%(name)s) - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    time_cur = time.time()  # Record end time for data loader setup
+    print(f"start main time : {time_cur:.2f} seconds")
     main()
     wandb.finish()
 

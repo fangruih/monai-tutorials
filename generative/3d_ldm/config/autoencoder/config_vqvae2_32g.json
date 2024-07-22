@@ -1,5 +1,5 @@
 {
-    "wandb_project_name":"vq_vae2",
+    "wandb_project_name":"test_fangrui",
     "dataset_type":"T1_all",
     "channel": 0,
     "spacing": [1.1, 1.1, 1.1],

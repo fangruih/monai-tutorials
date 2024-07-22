@@ -1,11 +1,10 @@
 {
-    "wandb_project_name":"test_fangrui",
-    "dataset_type":"hcp_ya_T1",
+    "dataset_type":"T1_all",
     "channel": 0,
-    "spacing": [1.1, 1.1, 1.1],
+    "spacing": [1.0, 1.0, 1.0],
     "spatial_dims": 3,
     "image_channels": 1,
-    "latent_channels": 8,
+    "latent_channels": 256,
     "autoencoder_def": {
         "_target_": "generative.networks.nets.autoencoderkl_vq2.AutoencoderKL_vq2",
         "spatial_dims": "@spatial_dims",
@@ -29,15 +28,15 @@
         "with_decoder_nonlocal_attn": false
     },
     "autoencoder_train": {
-        "batch_size": 1,
-        "patch_size": [112,128,80],
-        "lr": 5e-6,
+        "batch_size": 2,
+        "patch_size": [116, 140, 104],
+        "lr": 1e-5,
         "perceptual_weight": 0.001,
         "kl_weight": 1e-7,
         "quantization_weight": 1e-3,
         "recon_loss": "l1",
-        "n_epochs": 1000,
-        "val_interval": 10
+        "n_epochs": 500,
+        "val_interval": 2
     },
     "diffusion_def": {
         "_target_": "generative.networks.nets.DiffusionModelUNet",
@@ -50,9 +49,9 @@
         "num_res_blocks": 2
     },
     "diffusion_train": {
-        "batch_size": 2,
+        "batch_size": 6,
         "patch_size": [144,176,112],
-        "lr": 5e-6,
+        "lr": 15e-6,
         "n_epochs": 10000,
         "val_interval": 2
     },
