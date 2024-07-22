@@ -319,96 +319,97 @@ def main():
         
         train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
         print("after setting progress bar")
-        with profiler.profile(use_cuda=True, record_shapes=True, profile_memory=True) as prof:
+        # with profiler.profile(use_cuda=True, record_shapes=True, profile_memory=True) as prof:
             
-            for step, batch in train_progress_bar:   
-                # if step ==0 or step==1:
-                #     print("step", step)
-                # else:
-                #     break
-                # print("image.shape", batch["image"].shape)
-                images = batch["image"].to(device)
-                # images = batch.to(device)
-                # print("images", images.shape)
-                
-                # train Generator part
-                optimizer_g.zero_grad(set_to_none=True)
-                
-                
-                # Forward pass
-                reconstruction, quantized, quantization_loss, z = autoencoder(images)
-                
-                # Compute losses
-                recons_loss = intensity_loss(reconstruction, images)
-                p_loss = loss_perceptual(reconstruction.float(), images.float())
-                
-                # Combine all losses
-                loss_g = recons_loss + perceptual_weight * p_loss + quantization_weight * quantization_loss
+        for step, batch in train_progress_bar:   
+            # if step ==0 or step==1:
+            #     print("step", step)
+            # else:
+            #     break
+            # print("image.shape", batch["image"].shape)
+            images = batch["image"].to(device)
+            
+            # train Generator part
+            optimizer_g.zero_grad(set_to_none=True)
             
             
+            # Forward pass
+            reconstruction, quantized, quantization_loss, z = autoencoder(images)
+            
+            # Compute losses
+            recons_loss = intensity_loss(reconstruction, images)
+            p_loss = loss_perceptual(reconstruction.float(), images.float())
+            
+            # Combine all losses
+            loss_g = recons_loss + perceptual_weight * p_loss + quantization_weight * quantization_loss
+        
+        
 
-                if epoch > autoencoder_warm_up_n_epochs:
-                    logits_fake = discriminator(reconstruction.contiguous().float())[-1]
-                    generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
-                    loss_g = loss_g + adv_weight * generator_loss
+            if epoch > autoencoder_warm_up_n_epochs:
+                logits_fake = discriminator(reconstruction.contiguous().float())[-1]
+                generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
+                loss_g = loss_g + adv_weight * generator_loss
 
-                loss_g.backward()
-                optimizer_g.step()
-                # scaler.scale(loss_g).backward()
-                # scaler.step(optimizer_g)
+            loss_g.backward()
+            optimizer_g.step()
+            # scaler.scale(loss_g).backward()
+            # scaler.step(optimizer_g)
+            # scaler.update()
+
+
+            if epoch > autoencoder_warm_up_n_epochs:
+                # train Discriminator part
+                optimizer_d.zero_grad(set_to_none=True)
+                
+                logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
+                loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
+                logits_real = discriminator(images.contiguous().detach())[-1]
+                loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
+                discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
+                loss_d = adv_weight * discriminator_loss
+
+                loss_d.backward()
+                optimizer_d.step()
+                # scaler.scale(loss_d).backward()
+                # scaler.step(optimizer_d)
                 # scaler.update()
 
 
+            # update progress bar
+            train_progress_bar.set_postfix({
+                'Loss': loss_g.item(),
+                'Recon Loss': recons_loss.item(),
+                'Quantization Loss': quantization_loss.item()
+            })
+            # write train loss for each batch into tensorboard
+            if rank == 0:
+                total_step += 1
+                
+                train_metrics = {
+                    "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
+                    "train/quantization_loss_iter": quantization_loss.item(),
+                    "train/perceptual_loss_iter": p_loss.item()
+                }
+                tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
+                tensorboard_writer.add_scalar("train_quantization_loss_iter", quantization_loss, total_step)
+                tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
                 if epoch > autoencoder_warm_up_n_epochs:
-                    # train Discriminator part
-                    optimizer_d.zero_grad(set_to_none=True)
-                   
-                    logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
-                    loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
-                    logits_real = discriminator(images.contiguous().detach())[-1]
-                    loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
-                    discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
-                    loss_d = adv_weight * discriminator_loss
-
-                    loss_d.backward()
-                    optimizer_d.step()
-                    # scaler.scale(loss_d).backward()
-                    # scaler.step(optimizer_d)
-                    # scaler.update()
-
-
-                # update progress bar
-                train_progress_bar.set_postfix({
-                    'Loss': loss_g.item(),
-                    'Recon Loss': recons_loss.item(),
-                    'Quantization Loss': quantization_loss.item()
-                })
-                # write train loss for each batch into tensorboard
-                if rank == 0:
-                    total_step += 1
-                    
-                    train_metrics = {
-                        "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
-                        "train/quantization_loss_iter": quantization_loss.item(),
-                        "train/perceptual_loss_iter": p_loss.item()
-                    }
-                    tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
-                    tensorboard_writer.add_scalar("train_quantization_loss_iter", quantization_loss, total_step)
-                    tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
-                    if epoch > autoencoder_warm_up_n_epochs:
-                        train_metrics.update({
-                            "train/adv_loss_iter": generator_loss.item(),
-                            "train/fake_loss_iter": loss_d_fake.item(),
-                            "train/real_loss_iter": loss_d_real.item()
-                        })
-                        tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
-                        tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
-                        tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
-                    wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
-                torch.cuda.empty_cache()
-        
-        print(prof.key_averages().table(sort_by="cuda_time_total"))
-        print("after printing ")
+                    train_metrics.update({
+                        "train/adv_loss_iter": generator_loss.item(),
+                        "train/fake_loss_iter": loss_d_fake.item(),
+                        "train/real_loss_iter": loss_d_real.item()
+                    })
+                    tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
+                    tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
+                    tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
+                wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
+            
+            torch.cuda.empty_cache()
+            
+    
+        # print("before profiling print")
+        # print(prof.key_averages().table(sort_by="cuda_time_total"))
+        # print("after printing ")
                 
         # validation
         if epoch % val_interval == 0:
@@ -418,13 +419,12 @@ def main():
             psnrs=0
             ssims=0
             mmd =0
-            val_progress_bar = tqdm(enumerate(val_loader), total=len(val_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
-            for step, batch in val_progress_bar:   
-            # for step, batch in enumerate(val_loader):
-                # if step>2:
-                #     break
-                images = batch["image"].to(device)  # choose only one of Brats channels
-                # print(images.shape)
+            # val_progress_bar = tqdm(enumerate(val_loader), total=len(val_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+            # for step, batch in val_progress_bar:   
+            for step, batch in enumerate(val_loader):
+                
+                images = batch["image"].to(device)  
+                
                 with torch.no_grad():
                     # reconstruction, z_mu, z_sigma = autoencoder(images)
                     reconstruction, quantized, quantization_loss, z = autoencoder(images)

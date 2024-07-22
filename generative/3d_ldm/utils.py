@@ -11,8 +11,10 @@
 
 import os
 from datetime import timedelta
+import logging
 
 from tqdm import tqdm
+import time
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -243,7 +245,17 @@ def prepare_dataloader_extract_dataset(
         print(f'Image shape {train_ds[0]["image"].shape}')
     return train_ds , val_ds
 
-
+class SafeLoadImaged(LoadImaged):
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.keys:
+            try:
+                img = nib.load(d[key])
+                d[key] = np.asanyarray(img.dataobj, order="C")
+            except (zlib.error, Exception) as e:
+                logger.error(f"Skipping file {d[key]} due to error: {e}")
+                d[key] = None
+        return d
 def prepare_dataloader_extract_dataset_custom(
     args,
     batch_size,
@@ -485,16 +497,16 @@ def prepare_dataloader_custom(
 def prepare_file_list(base_dir, type):
     # hcp_ya data 
     if type=="T1_all":
-        hcp_ya_dir = base_dir+'hcp_ya/registered'
-        base_path = Path(hcp_ya_dir)
-        hcp_ya_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        print(f'Number of files in hcp_ya_files: {len(hcp_ya_files)}')
+        # hcp_ya_dir = base_dir+'hcp_ya/registered'
+        # base_path = Path(hcp_ya_dir)
+        # hcp_ya_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
+        # print(f'Number of files in hcp_ya_files: {len(hcp_ya_files)}')
 
-        # openneuro
-        openneuro_T1_dir = base_dir+'openneuro'
-        base_path = Path(openneuro_T1_dir)
-        openneuro_T1_files = list(base_path.rglob('**/*T1*.nii.gz'))
-        print(f'Number of files in openneuro_T1_files: {len(openneuro_T1_files)}')
+        # # openneuro
+        # openneuro_T1_dir = base_dir+'openneuro'
+        # base_path = Path(openneuro_T1_dir)
+        # openneuro_T1_files = list(base_path.rglob('**/*T1*.nii.gz'))
+        # print(f'Number of files in openneuro_T1_files: {len(openneuro_T1_files)}')
         
         
         # # ABCD 
@@ -510,11 +522,17 @@ def prepare_file_list(base_dir, type):
         abcd_T1_files = []
 
         # Use tqdm to show the progress of file collection
-        for file in tqdm(base_path.rglob('**/*baselineYear1Arm1_run-01_T1w.nii'), desc="Collecting abcd files"):
+        for file in tqdm(base_path.rglob('./sub-NDARINV*/ses-baselineYear1Arm1/anat/*baselineYear1Arm1_run-01_T1w.nii'), desc="Collecting abcd files"):
             abcd_T1_files.append(file)
+            
         
-        print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
-        all_files = hcp_ya_files + openneuro_T1_files + abcd_T1_files
+        
+        # print(f'Number of files in abcd_T1_files: {len(abcd_T1_files)}')
+        # all_files = hcp_ya_files + openneuro_T1_files + abcd_T1_files
+        print(f"change the virabel name  : {time.time():.2f} seconds")
+        all_files = abcd_T1_files
+        print(f" after change the virabel name  : {time.time():.2f} seconds")
+        
         
         
     
@@ -526,6 +544,7 @@ def prepare_file_list(base_dir, type):
     else:
         raise ValueError(f"Unsupported dataset type specified: {type}")
 
-    
+    print(f"before print  : {time.time():.2f} seconds")
     print(f'Total number of files: {len(all_files)}')
+    print(f"after print : {time.time():.2f} seconds")
     return all_files
