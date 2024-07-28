@@ -271,7 +271,8 @@ def prepare_dataloader_extract_dataset_custom(
     download=False,
     size_divisible=16,
     amp=False,
-    
+    with_conditioning= False, 
+    conditioning_file=None,
     
 ):
     ddp_bool = world_size > 1
@@ -318,29 +319,6 @@ def prepare_dataloader_extract_dataset_custom(
         ]
     )
     os.makedirs(args.data_base_dir, exist_ok=True)
-    # train_ds = DecathlonDataset(
-    #     root_dir=args.data_base_dir,
-    #     task="Task01_BrainTumour",
-    #     section="training",  # validation
-    #     cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
-    #     num_workers=8,
-    #     download=download,  # Set download to True if the dataset hasnt been downloaded yet
-    #     seed=0,
-    #     transform=train_transforms,
-    # )
-    # val_ds = DecathlonDataset(
-    #     root_dir=args.data_base_dir,
-    #     task="Task01_BrainTumour",
-    #     section="validation",  # validation
-    #     cache_rate=cache,  # you may need a few Gb of RAM... Set to 0 otherwise
-    #     num_workers=8,
-    #     download=download,  # Set download to True if the dataset hasnt been downloaded yet
-    #     seed=0,
-    #     transform=val_transforms,
-    # )
-    # base_path = Path(base_dir)
-    # # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-    # all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
     
     # Shuffle the file list
     random.seed(seed)
@@ -354,8 +332,9 @@ def prepare_dataloader_extract_dataset_custom(
     print("val_files, len", len(val_files))
     
     # Create datasets
-    train_ds = HCPT1wDataset(train_files, train_transforms)
-    val_ds = HCPT1wDataset(val_files, val_transforms)
+    print("train_transforms", train_transforms)
+    train_ds = HCPT1wDataset(train_files, transform=train_transforms, with_conditioning= with_conditioning, conditioning_file=conditioning_file, compute_dtype=compute_dtype)
+    val_ds = HCPT1wDataset(val_files, transform=val_transforms, with_conditioning=with_conditioning, conditioning_file=conditioning_file, compute_dtype=compute_dtype)
     
     if ddp_bool:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds, num_replicas=world_size, rank=rank)
@@ -372,6 +351,7 @@ def prepare_dataloader_extract_dataset_custom(
         val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
     )
     if rank == 0:
+        # print(f'Image shape {train_ds[0]["image"]}')
         print(f'Image shape {train_ds[0]["image"].shape}')
     return  train_loader, val_loader #train_ds , val_ds #
 

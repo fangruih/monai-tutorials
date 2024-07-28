@@ -2,9 +2,9 @@ import argparse
 import json
 import logging
 import time
-time_cur = time.time()  # Record end time for data loader setup
+
 import torch.autograd.profiler as profiler
-print(f"start loading library : {time_cur:.2f} seconds")
+
 import os
 import sys
 from pathlib import Path
@@ -322,11 +322,7 @@ def main():
         # with profiler.profile(use_cuda=True, record_shapes=True, profile_memory=True) as prof:
             
         for step, batch in train_progress_bar:   
-            # if step ==0 or step==1:
-            #     print("step", step)
-            # else:
-            #     break
-            # print("image.shape", batch["image"].shape)
+            
             images = batch["image"].to(device)
             
             # train Generator part

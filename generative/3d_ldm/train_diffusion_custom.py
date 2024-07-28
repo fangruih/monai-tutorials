@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import time
 from pathlib import Path
 from tqdm import tqdm
 
@@ -18,9 +19,10 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom
+from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom,  prepare_file_list
 from visualize_image import visualize_one_slice_in_3d_image
 from datetime import datetime
+from create_dataset import *
 
 import wandb
 from wandb import Image
@@ -56,7 +58,7 @@ def main():
     torch.cuda.set_device(device)
     print(f"Using {device}")
 
-    print_config()
+    # print_config()
     torch.backends.cudnn.benchmark = True
     torch.set_num_threads(4)
 
@@ -68,11 +70,77 @@ def main():
     for k, v in config_dict.items():
         setattr(args, k, v)
         
-    
+    from datetime import datetime
+    # Generate a dynamic name based on the current date and time
+    current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    run_name = f'diffusion_{current_time}'
+    if rank ==0:
+        wandb.init(project=args.wandb_project_name_diffusion,name=run_name, config=args)
+
     set_determinism(42)
 
     # Step 1: set data loader
-    size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
+    # Choose base directory base on the cluster storage. 
+    # set up environment variable accordingly e.g. "export CLUSTER_NAME=sc" 
+    cluster_name = os.getenv('CLUSTER_NAME')
+    if cluster_name == 'vassar':
+        base_dir = '/home/sijun/meow/data_new/'
+    elif cluster_name == 'sc':
+        base_dir = '/scr/fangruih/mri_data/'
+    else:
+        raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable. e.g. export CLUSTER=NAME=sc')
+
+    size_divisible = 2 ** (len(args.diffusion_def["num_channels"]) - 1)
+    # Step 1: set data loader
+    file_list_cache = Path(f"{base_dir}/{args.dataset_type}_file_list.json")
+    
+    file_list_start_time = time.time()  # Record end time for data loader setup
+    
+    print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+    if rank == 0:
+        if file_list_cache.exists():
+            with open(file_list_cache, 'r') as f:
+                all_files_str = json.load(f)
+                print("Loaded file list from cache.")
+        else:
+            file_list_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+            all_files = prepare_file_list(base_dir=base_dir, type=args.dataset_type)
+            
+            file_list_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_end_time: {file_list_end_time:.2f} seconds")
+            # Convert Path objects to strings for JSON serialization
+            all_files_str = [str(file) for file in all_files]
+            dump_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_start_time: {dump_start_time:.2f} seconds")
+
+            with open(file_list_cache, 'w') as f:
+                json.dump(all_files_str, f)
+                print("Saved file list to cache.")
+            
+            dump_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_end_time: {dump_end_time:.2f} seconds")
+
+        # Convert the file list to a JSON string to broadcast
+        all_files_json = json.dumps(all_files_str)
+    else:
+        all_files_json = None
+    all_files_json_list = [all_files_json]
+    if args.gpus > 1:
+        dist.broadcast_object_list(all_files_json_list, src=0)
+    all_files_json = all_files_json_list[0]
+
+    # Convert the JSON string back to a list
+    all_files_str = json.loads(all_files_json)
+    all_files = [Path(file) for file in all_files_str]
+    
+
+    
     if args.dataset_type=="brain_tumor":
     
         train_loader, val_loader = prepare_dataloader(
@@ -87,15 +155,8 @@ def main():
             amp=True,
         )
         
-        print("len(train_loader)", len(train_loader))
-        print("len(val_loader)", len(val_loader))
     elif args.dataset_type=="hcp_ya_T1":
-        base_dir = '/home/sijun/meow/data_new/hcp/registered'
-        base_path = Path(base_dir)
-        # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-
-        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+        
         train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.diffusion_train["batch_size"],
@@ -108,12 +169,28 @@ def main():
             cache=1.0,
             size_divisible=size_divisible,
             amp=True,
+            with_conditioning=args.diffusion_def["with_conditioning"],
         )
-        # train_loader=val_loader
+    elif args.dataset_type=="T1_all":
+        print("args.diffusion_train[conditioning_file],", args.diffusion_train["conditioning_file"])
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+            args,
+            args.diffusion_train["batch_size"],
+            args.diffusion_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
+            randcrop=False,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            size_divisible=size_divisible,
+            amp=True,
+            with_conditioning=args.diffusion_def["with_conditioning"],
+            conditioning_file=args.diffusion_train["conditioning_file"]
+        )
         
     else: 
         raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
-
 
     # initialize tensorboard writer and wandb
     if rank == 0:
@@ -127,17 +204,12 @@ def main():
         tensorboard_writer = SummaryWriter(tensorboard_path)
         
         
-        # Generate a dynamic name based on the current date and time
         
-        run_name = f'diffusion_{current_time}'
-        wandb.init(project=args.wandb_project_name,name=run_name, config=args)
-
-
     # Step 2: Define Autoencoder KL network and diffusion model
     # Load Autoencoder KL network
     autoencoder = define_instance(args, "autoencoder_def").to(device)
 
-    trained_g_path = os.path.join(args.model_dir, "autoencoder.pt")
+    trained_g_path = os.path.join(args.autoencoder_dir, "vq_vae.pt")
 
     map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
     autoencoder.load_state_dict(torch.load(trained_g_path, map_location=map_location))
@@ -154,6 +226,9 @@ def main():
         with autocast(enabled=True):
             check_data = first(train_loader)
             z = autoencoder.encode_stage_2_inputs(check_data["image"].to(device))
+            print("z.shape",z.shape)
+            # z_2 = autoencoder.encode_stage_2_inputs_vae(check_data["image"].to(device))
+            # print("z_2.shape",z_2.shape)
             if rank == 0:
                 print(f"Latent feature shape {z.shape}")
                 for axis in range(3):
@@ -228,9 +303,18 @@ def main():
             val_loader.sampler.set_epoch(epoch)
         
         train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+        
         for step, batch in train_progress_bar:
         # for step, batch in enumerate(train_loader):
             images = batch["image"].to(device)
+            
+            if args.diffusion_def["with_conditioning"]:
+                condition = batch["condition"].to(device)
+                # print("condition.shape",condition.shape)
+                # condition = torch.cat([item['condition'] for item in batch], dim=0).to(device)
+            
+            else: 
+                condition=None
             optimizer_diff.zero_grad(set_to_none=True)
 
             with autocast(enabled=True):
@@ -248,12 +332,14 @@ def main():
                     inferer_autoencoder = autoencoder.module
                 else:
                     inferer_autoencoder = autoencoder
+                
                 noise_pred = inferer(
                     inputs=images,
                     autoencoder_model=inferer_autoencoder,
                     diffusion_model=unet,
                     noise=noise,
                     timesteps=timesteps,
+                    condition=condition,
                 )
 
                 loss = F.mse_loss(noise_pred.float(), noise.float())
@@ -265,10 +351,10 @@ def main():
             # write train loss for each batch into tensorboard
             if rank == 0:
                 total_step += 1
-                tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step)
+                tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step * args.diffusion_train["batch_size"]*world_size)
                 wandb.log({
                     "train_diffusion_loss_iter": loss.item(),
-                    }, step=total_step * args.diffusion_train["batch_size"])
+                    }, step=total_step * args.diffusion_train["batch_size"]*world_size)
             train_progress_bar.set_postfix(loss=loss.item())
 
         # validation
@@ -279,8 +365,17 @@ def main():
             with torch.no_grad():
                 with autocast(enabled=True):
                     # compute val loss
+                    condition=None
                     for step, batch in enumerate(val_loader):
+                        
                         images = batch["image"].to(device)
+                        if args.diffusion_def["with_conditioning"]:
+                            condition = batch["condition"].to(device)
+                            # print("condition.shape",condition.shape)
+                            # condition = torch.cat([item['condition'] for item in batch], dim=0).to(device)
+            
+                        else: 
+                            condition = None
                         noise_shape = [images.shape[0]] + list(z.shape[1:])
                         noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
                         
@@ -305,7 +400,9 @@ def main():
                             diffusion_model=unet,
                             noise=noise,
                             timesteps=timesteps,
+                            condition=condition,
                         )
+                        
                         val_loss = F.mse_loss(noise_pred.float(), noise.float())
                         val_recon_epoch_loss += val_loss
                     val_recon_epoch_loss = val_recon_epoch_loss / (step + 1)
@@ -321,7 +418,7 @@ def main():
                         tensorboard_writer.add_scalar("val_diffusion_loss", val_recon_epoch_loss, epoch)
                         wandb.log({
                             "val_diffusion_loss": val_recon_epoch_loss,
-                            }, step=total_step * args.diffusion_train["batch_size"])
+                            }, step=total_step * args.diffusion_train["batch_size"]*world_size)
                         print(f"Epoch {epoch} val_diffusion_loss: {val_recon_epoch_loss}")
                         # save last model
                         if ddp_bool:
@@ -340,12 +437,18 @@ def main():
                             print("Save trained latent diffusion model to", trained_diffusion_path)
 
                         # visualize synthesized image
-                        if (epoch) % (50 * val_interval) == 0:  # time cost of synthesizing images is large
+                        if (epoch) % (2 * val_interval) == 0:  # time cost of synthesizing images is large
+                            if condition!=None:
+                                condition= condition[0].unsqueeze(0)
+                                print("syntesize base on condition ", condition)
+                                print("condition shape", condition.shape)
+                            
                             synthetic_images = inferer.sample(
                                 input_noise=noise[0:1, ...],
                                 autoencoder_model=inferer_autoencoder,
                                 diffusion_model=unet,
                                 scheduler=scheduler,
+                                conditioning=condition
                             )
                             for axis in range(3):
                                 synthetic_img= visualize_one_slice_in_3d_image(synthetic_images[0, 0, ...], axis)
@@ -361,7 +464,7 @@ def main():
                                 wandb.log({
                                         f"val/image/syn_axis_{axis}": Image(synthetic_img),
                                         
-                                    }, step=total_step*args.diffusion_train["batch_size"])
+                                    }, step=total_step*args.diffusion_train["batch_size"]*world_size)
 
 
 if __name__ == "__main__":

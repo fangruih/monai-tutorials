@@ -69,11 +69,11 @@ def main():
 
     # load trained networks
     autoencoder = define_instance(args, "autoencoder_def").to(device)
-    trained_g_path = os.path.join(args.model_dir, "autoencoder.pt")
+    trained_g_path = os.path.join(args.autoencoder_dir, "vq_vae.pt")
     autoencoder.load_state_dict(torch.load(trained_g_path))
 
     diffusion_model = define_instance(args, "diffusion_def").to(device)
-    trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
+    trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
     diffusion_model.load_state_dict(torch.load(trained_diffusion_path))
 
     scheduler = DDPMScheduler(
@@ -96,6 +96,8 @@ def main():
                 autoencoder_model=autoencoder,
                 diffusion_model=diffusion_model,
                 scheduler=scheduler,
+                conditioning=torch.tensor([[[138.,   1.,   0.]]]).to(device), 
+                
             )
         filename = os.path.join(args.output_dir, datetime.now().strftime("synimg_%Y%m%d_%H%M%S"))
         final_img = nib.Nifti1Image(synthetic_images[0, 0, ...].unsqueeze(-1).cpu().numpy(), np.eye(4))
