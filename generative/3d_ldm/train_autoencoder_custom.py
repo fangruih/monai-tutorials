@@ -1,7 +1,9 @@
-
 import argparse
 import json
 import logging
+import time
+
+import torch.autograd.profiler as profiler
 
 import os
 import sys
@@ -16,9 +18,8 @@ from monai.utils import set_determinism
 from torch.nn import L1Loss, MSELoss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory, prepare_file_list
 
-from utils import KL_loss, define_instance, prepare_dataloader, setup_ddp, print_gpu_memory
-from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory
 from visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
 from create_dataset import *
 from metrics import metrics_mean_mses_psnrs_ssims_mmd
@@ -58,8 +59,8 @@ def main():
 
     torch.cuda.set_device(device)
     print(f"Using {device}")
-
-    print_config()
+#   if rank == 0:
+#   print_config()
     torch.backends.cudnn.benchmark = True
     torch.set_num_threads(4)
     torch.autograd.set_detect_anomaly(True)
@@ -75,13 +76,74 @@ def main():
     from datetime import datetime
     # Generate a dynamic name based on the current date and time
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    run_name = f'autoencoder_{current_time}'
-    wandb.init(project=args.wandb_project_name,name=run_name, config=args)
+    run_name = f'vae_{current_time}'
+    wandb.init(project=args.wandb_project_name_VAE,name=run_name, config=args)
 
     set_determinism(42)
 
     # Step 1: set data loader
+    # Choose base directory base on the cluster storage. 
+    # set up environment variable accordingly e.g. "export CLUSTER_NAME=sc" 
+    cluster_name = os.getenv('CLUSTER_NAME')
+    if cluster_name == 'vassar':
+        base_dir = '/home/sijun/meow/data_new/'
+    elif cluster_name == 'sc':
+        # base_dir = '/simurgh/group/mri_data/'
+        base_dir = '/scr/fangruih/mri_data/'
+    else:
+        raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable. e.g. export CLUSTER=NAME=sc')
+
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
+    # Path to the cached file list
+    file_list_cache = Path(f"{base_dir}/{args.dataset_type}_file_list.json")
+    
+    file_list_start_time = time.time()  # Record end time for data loader setup
+    
+    print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+    # Create the file list only on the main process (rank 0)
+    if rank == 0:
+        if file_list_cache.exists():
+            with open(file_list_cache, 'r') as f:
+                all_files_str = json.load(f)
+                print("Loaded file list from cache.")
+        else:
+            file_list_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+            all_files = prepare_file_list(base_dir=base_dir, type=args.dataset_type)
+            
+            file_list_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_end_time: {file_list_end_time:.2f} seconds")
+            # Convert Path objects to strings for JSON serialization
+            all_files_str = [str(file) for file in all_files]
+            dump_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_start_time: {dump_start_time:.2f} seconds")
+
+            with open(file_list_cache, 'w') as f:
+                json.dump(all_files_str, f)
+                print("Saved file list to cache.")
+            
+            dump_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_end_time: {dump_end_time:.2f} seconds")
+
+        # Convert the file list to a JSON string to broadcast
+        all_files_json = json.dumps(all_files_str)
+    else:
+        all_files_json = None
+    all_files_json_list = [all_files_json]
+    if args.gpus > 1:
+        dist.broadcast_object_list(all_files_json_list, src=0)
+    all_files_json = all_files_json_list[0]
+
+    # Convert the JSON string back to a list
+    all_files_str = json.loads(all_files_json)
+    all_files = [Path(file) for file in all_files_str]
+    
     if args.dataset_type=="brain_tumor":
     
         train_loader, val_loader = prepare_dataloader(
@@ -98,13 +160,8 @@ def main():
         )
         print("len(train_loader)", len(train_loader))
         print("len(val_loader)", len(val_loader))
-    elif args.dataset_type=="hcp_T1":
-        base_dir = '/home/sijun/meow/data_new/hcp/registered'
-        base_path = Path(base_dir)
-        # all_files = list(base_path.rglob('*/**/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-        all_files = list(base_path.rglob('*/3T/T1w_MPR1/*_3T_T1w_MPR1.nii.gz'))
-
-        # train_dataset, val_dataset = create_train_val_datasets(base_dir )
+    elif args.dataset_type=="hcp_ya_T1":
+        
         train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.autoencoder_train["batch_size"],
@@ -119,6 +176,28 @@ def main():
             size_divisible=size_divisible,
             amp=False,
         )
+    
+    elif args.dataset_type=="T1_all":
+        
+        # all_files = prepare_file_list(base_dir=base_dir,type=args.dataset_type)
+        # Create the file list only on the main process (rank 0)
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+            args,
+            args.autoencoder_train["batch_size"],
+            args.autoencoder_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
+            randcrop=True,
+            rank=rank,
+            world_size=world_size,
+            cache=1.0,
+            download=False,
+            size_divisible=size_divisible,
+            amp=False,
+        )
+        print(f'Number of batches in train_loader: {len(train_loader)}')
+        print(f'Number of batches in val_loader: {len(val_loader)}')
+    
     else: 
         raise ValueError(f"Unsupported dataset type specified: {args.dataset_type}")
 
@@ -258,6 +337,7 @@ def main():
             if epoch > autoencoder_warm_up_n_epochs:
                 # train Discriminator part
                 optimizer_d.zero_grad(set_to_none=True)
+                
                 logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
                 loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
                 logits_real = discriminator(images.contiguous().detach())[-1]
@@ -297,6 +377,19 @@ def main():
                     tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
                 wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"])
 
+                if step ==1:
+                    for axis in range(3):
+                        
+                        
+                        train_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis) #.transpose([2, 1, 0])
+                        train_recon = visualize_one_slice_in_3d_image_greyscale(reconstruction[0, 0, ...], axis) #.transpose([2, 1, 0])
+                        
+                        wandb.log({
+                        f"train/image/gt_axis_{axis}": Image(train_img),
+                        f"train/image/recon_axis_{axis}": Image(train_recon)
+                    }, step=total_step*args.autoencoder_train["batch_size"])
+                
+            torch.cuda.empty_cache()
         # validation
         if epoch % val_interval == 0:
             autoencoder.eval()
@@ -306,7 +399,9 @@ def main():
             ssims=0
             mmd =0
             for step, batch in enumerate(val_loader):
-                images = batch["image"].to(device)  # choose only one of Brats channels
+                
+                images = batch["image"].to(device)
+                
                 with torch.no_grad():
                     reconstruction, z_mu, z_sigma = autoencoder(images)
                     # print("reconstruction", reconstruction.size())
@@ -369,7 +464,7 @@ def main():
 
                 for axis in range(3):
                     tensorboard_writer.add_image(
-                        "val_img_" + str(axis),
+                        "val_gt_" + str(axis),
                         visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
                         epoch,
                     )
@@ -387,7 +482,7 @@ def main():
                     # print("val_recon.shape",val_recon.shape)
 
                     wandb.log({
-                        f"val/image/img_axis_{axis}": Image(val_img),
+                        f"val/image/gt_axis_{axis}": Image(val_img),
                         f"val/image/recon_axis_{axis}": Image(val_recon)
                     }, step=total_step*args.autoencoder_train["batch_size"])
                 

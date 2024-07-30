@@ -3,7 +3,7 @@
     "wandb_project_name_diffusion":"diffusion_abcd",
     "data_base_dir": "./dataset",
     "autoencoder_dir": "./trained_weights/abcd/2024-07-22_02-37-36",
-    "diffusion_dir": "./trained_weights/abcd/2024-07-23_04-38-29",
+    "diffusion_dir": "./trained_weights/abcd/2024-07-26_22-48-01", 
     "model_dir": "./trained_weights/abcd",
     "tfevent_path": "./tfevent/abcd",
     "output_dir": "./output/abcd",
