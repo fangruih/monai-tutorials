@@ -1,5 +1,6 @@
 {
-    "wandb_project_name":"test_fangrui",
+    "wandb_project_name_VAE":"test_fangrui",
+    "wandb_project_name_diffusion":"test_fangrui",
     "data_base_dir": "./dataset",
     "model_dir": "./trained_weights/draft_test",
     "tfevent_path": "./tfevent/draft_test",

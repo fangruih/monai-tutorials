@@ -4,9 +4,9 @@
     "spacing": [1.0, 1.0, 1.0],
     "spatial_dims": 3,
     "image_channels": 1,
-    "latent_channels": 256,
+    "latent_channels": 8,
     "autoencoder_def": {
-        "_target_": "generative.networks.nets.autoencoderkl_vq2.AutoencoderKL_vq2",
+        "_target_": "generative.networks.nets.AutoencoderKL",
         "spatial_dims": "@spatial_dims",
         "in_channels": "$@image_channels",
         "out_channels": "@image_channels",
@@ -48,14 +48,17 @@
         "num_head_channels":[0, 64, 64],
         "num_res_blocks": 2,
         "with_conditioning":false
-    },
+        
+    }, 
     "diffusion_train": {
         "batch_size": 4,
-        "patch_size": [144,176,112],
+        "patch_size": [144,176,130],
         "lr": 1e-5,
         "n_epochs": 5000,
-        "val_interval": 1,
-        "conditioning_file":"/simurgh/u/fangruih/monai-tutorials/generative/3d_ldm/conditioning/fmriresults01.txt"
+        "val_interval": 2,
+        "conditioning_file":"/simurgh/u/fangruih/monai-tutorials/generative/3d_ldm/conditioning/fmriresults01.txt",
+        "expand_token_times":100,
+        "cross_attention_dim": 0
     },
     "NoiseScheduler": {
         "num_train_timesteps": 1000,

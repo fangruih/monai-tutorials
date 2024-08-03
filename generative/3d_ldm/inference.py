@@ -66,10 +66,12 @@ def main():
         setattr(args, k, v)
 
     set_determinism(42)
+    
+
 
     # load trained networks
     autoencoder = define_instance(args, "autoencoder_def").to(device)
-    trained_g_path = os.path.join(args.autoencoder_dir, "vq_vae.pt")
+    trained_g_path = os.path.join(args.autoencoder_dir, "autoencoder.pt")
     autoencoder.load_state_dict(torch.load(trained_g_path))
 
     diffusion_model = define_instance(args, "diffusion_def").to(device)
@@ -90,13 +92,17 @@ def main():
 
     for _ in range(args.num):
         noise = torch.randn(noise_shape, dtype=torch.float32).to(device)
+        # noise = torch.randint(low=0, high=1024, size=noise_shape)
+
+        # noise = autoencoder.quantizer.get_codebook_entry(noise, shape=noise_shape)
         with torch.no_grad():
             synthetic_images = inferer.sample(
                 input_noise=noise,
                 autoencoder_model=autoencoder,
                 diffusion_model=diffusion_model,
                 scheduler=scheduler,
-                conditioning=torch.tensor([[[138.,   1.,   0.]]]).to(device), 
+                conditioning=None, 
+                # conditioning=torch.tensor([[[138.,   1.,   0.]]]).to(device), 
                 
             )
         filename = os.path.join(args.output_dir, datetime.now().strftime("synimg_%Y%m%d_%H%M%S"))

@@ -4,7 +4,7 @@
     "spacing": [1.0, 1.0, 1.0],
     "spatial_dims": 3,
     "image_channels": 1,
-    "latent_channels": 256,
+    "latent_channels": 8,
     "autoencoder_def": {
         
         "_target_": "generative.networks.nets.AutoencoderKL",
@@ -30,7 +30,8 @@
     },
     "autoencoder_train": {
         "batch_size": 1,
-        "patch_size": [144,176,112],
+        "patch_size": [152,192,136],
+        "random_crop":false,
         "lr": 1e-5,
         "perceptual_weight": 0.001,
         "kl_weight": 1e-7,
@@ -50,8 +51,8 @@
         "num_res_blocks": 2
     },
     "diffusion_train": {
-        "batch_size": 6,
-        "patch_size": [144,176,112],
+        "batch_size": 5,
+        "patch_size": [152,192,136],
         "lr": 15e-6,
         "n_epochs": 10000,
         "val_interval": 2

@@ -273,6 +273,8 @@ def prepare_dataloader_extract_dataset_custom(
     amp=False,
     with_conditioning= False, 
     conditioning_file=None,
+    cross_attention_dim=None,
+    expand_token_times=None,
     
 ):
     ddp_bool = world_size > 1
@@ -333,8 +335,13 @@ def prepare_dataloader_extract_dataset_custom(
     
     # Create datasets
     print("train_transforms", train_transforms)
-    train_ds = HCPT1wDataset(train_files, transform=train_transforms, with_conditioning= with_conditioning, conditioning_file=conditioning_file, compute_dtype=compute_dtype)
-    val_ds = HCPT1wDataset(val_files, transform=val_transforms, with_conditioning=with_conditioning, conditioning_file=conditioning_file, compute_dtype=compute_dtype)
+    train_ds = HCPT1wDataset(train_files, transform=train_transforms, with_conditioning= with_conditioning, 
+                             conditioning_file=conditioning_file,cross_attention_dim=cross_attention_dim, 
+                             expand_token_times= expand_token_times, compute_dtype=compute_dtype)
+    
+    val_ds = HCPT1wDataset(val_files, transform=val_transforms, with_conditioning=with_conditioning, 
+                           conditioning_file=conditioning_file, cross_attention_dim=cross_attention_dim,
+                           expand_token_times=expand_token_times, compute_dtype=compute_dtype)
     
     if ddp_bool:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds, num_replicas=world_size, rank=rank)
@@ -352,7 +359,8 @@ def prepare_dataloader_extract_dataset_custom(
     )
     if rank == 0:
         # print(f'Image shape {train_ds[0]["image"]}')
-        print(f'Image shape {train_ds[0]["image"].shape}')
+        print(f'Train Image shape {train_ds[0]["image"].shape}')
+        print(f'Val Image shape {val_ds[0]["image"].shape}')
     return  train_loader, val_loader #train_ds , val_ds #
 
 

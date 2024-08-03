@@ -1,10 +1,11 @@
 {
-    "wandb_project_name_VAE":"vqVAE_abcd",
+    "wandb_project_name_VAE":"VAE_abcd",
     "wandb_project_name_diffusion":"diffusion_abcd",
     "data_base_dir": "./dataset",
-    "autoencoder_dir": "./trained_weights/abcd/2024-07-22_02-37-36",
+    "autoencoder_dir": "./trained_weights/abcd/2024-08-01_17-11-58",
+    "diffusion_dir": "./trained_weights/abcd/2024-08-02_16-11-30",
     "model_dir": "./trained_weights/abcd",
     "tfevent_path": "./tfevent/abcd",
     "output_dir": "./output/abcd",
-    "resume_ckpt": false
+    "resume_ckpt": true
 }

@@ -140,7 +140,6 @@ def main():
     all_files = [Path(file) for file in all_files_str]
     
 
-    
     if args.dataset_type=="brain_tumor":
     
         train_loader, val_loader = prepare_dataloader(
@@ -186,7 +185,9 @@ def main():
             size_divisible=size_divisible,
             amp=True,
             with_conditioning=args.diffusion_def["with_conditioning"],
-            conditioning_file=args.diffusion_train["conditioning_file"]
+            conditioning_file=args.diffusion_train["conditioning_file"],
+            cross_attention_dim=args.diffusion_def["cross_attention_dim"],
+            expand_token_times= args.diffusion_train["expand_token_times"],
         )
         
     else: 
@@ -195,7 +196,7 @@ def main():
     # initialize tensorboard writer and wandb
     if rank == 0:
         Path(args.tfevent_path).mkdir(parents=True, exist_ok=True)
-        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # tensorboard_path = os.path.join(args.tfevent_path, "diffusion")
         tensorboard_path = os.path.join(args.tfevent_path, "diffusion", current_time)
 
@@ -209,7 +210,7 @@ def main():
     # Load Autoencoder KL network
     autoencoder = define_instance(args, "autoencoder_def").to(device)
 
-    trained_g_path = os.path.join(args.autoencoder_dir, "vq_vae.pt")
+    trained_g_path = os.path.join(args.autoencoder_dir, "autoencoder.pt")
 
     map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
     autoencoder.load_state_dict(torch.load(trained_g_path, map_location=map_location))
@@ -255,10 +256,14 @@ def main():
     # Define Diffusion Model
     unet = define_instance(args, "diffusion_def").to(device)
     args.model_dir= os.path.join(args.model_dir,current_time)
+    # args.model_dir= os.path.join(args.diffusion_dir,current_time)
     Path(args.model_dir).mkdir(parents=True, exist_ok=True)
     
-    trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
-    trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
+    # trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
+    # trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
+    
+    trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
+    trained_diffusion_path_last = os.path.join(args.diffusion_dir, "diffusion_unet_last.pt")
 
     if args.resume_ckpt:
         map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
@@ -302,14 +307,18 @@ def main():
             train_loader.sampler.set_epoch(epoch)
             val_loader.sampler.set_epoch(epoch)
         
-        train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
+        # train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
         
-        for step, batch in train_progress_bar:
-        # for step, batch in enumerate(train_loader):
+        # for step, batch in train_progress_bar:
+        for step, batch in enumerate(train_loader):
+            if step%10 == 0  and rank == 0:
+                print("epoch:",epoch,", step:", step)
+                
             images = batch["image"].to(device)
             
             if args.diffusion_def["with_conditioning"]:
                 condition = batch["condition"].to(device)
+                
                 # print("condition.shape",condition.shape)
                 # condition = torch.cat([item['condition'] for item in batch], dim=0).to(device)
             
@@ -344,6 +353,7 @@ def main():
 
                 loss = F.mse_loss(noise_pred.float(), noise.float())
 
+            
             scaler.scale(loss).backward()
             scaler.step(optimizer_diff)
             scaler.update()
@@ -355,10 +365,12 @@ def main():
                 wandb.log({
                     "train_diffusion_loss_iter": loss.item(),
                     }, step=total_step * args.diffusion_train["batch_size"]*world_size)
-            train_progress_bar.set_postfix(loss=loss.item())
+            # train_progress_bar.set_postfix(loss=loss.item())
 
+        torch.cuda.empty_cache()
         # validation
         if epoch % val_interval == 0:
+            
             autoencoder.eval()
             unet.eval()
             val_recon_epoch_loss = 0
@@ -367,7 +379,8 @@ def main():
                     # compute val loss
                     condition=None
                     for step, batch in enumerate(val_loader):
-                        
+                        # if step>2:
+                        #     break
                         images = batch["image"].to(device)
                         if args.diffusion_def["with_conditioning"]:
                             condition = batch["condition"].to(device)
@@ -440,7 +453,7 @@ def main():
                         if (epoch) % (2 * val_interval) == 0:  # time cost of synthesizing images is large
                             if condition!=None:
                                 condition= condition[0].unsqueeze(0)
-                                print("syntesize base on condition ", condition)
+                                # print("syntesize base on condition ", condition)
                                 print("condition shape", condition.shape)
                             
                             synthetic_images = inferer.sample(
@@ -465,7 +478,9 @@ def main():
                                         f"val/image/syn_axis_{axis}": Image(synthetic_img),
                                         
                                     }, step=total_step*args.diffusion_train["batch_size"]*world_size)
-
+                            
+                            del synthetic_images
+        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     logging.basicConfig(
