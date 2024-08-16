@@ -20,8 +20,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from utils import KL_loss, define_instance, prepare_dataloader, prepare_dataloader_extract_dataset_custom, setup_ddp, print_gpu_memory, prepare_file_list
 
-from util.dataset_utils import prepare_dataloader_from_list
-from plot_test.visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
+from visualize_image import visualize_one_slice_in_3d_image, visualize_one_slice_in_3d_image_greyscale
 from create_dataset import *
 from metrics import metrics_mean_mses_psnrs_ssims_mmd
 import wandb
@@ -97,6 +96,54 @@ def main():
 
     size_divisible = 2 ** (len(args.autoencoder_def["num_channels"]) - 1)
     # Path to the cached file list
+    file_list_cache = Path(f"{base_dir}/{args.dataset_type}_file_list.json")
+    
+    file_list_start_time = time.time()  # Record end time for data loader setup
+    
+    print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+    # Create the file list only on the main process (rank 0)
+    if rank == 0:
+        if file_list_cache.exists():
+            with open(file_list_cache, 'r') as f:
+                all_files_str = json.load(f)
+                print("Loaded file list from cache.")
+        else:
+            file_list_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
+
+            all_files = prepare_file_list(base_dir=base_dir, type=args.dataset_type)
+            
+            file_list_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"file_list_end_time: {file_list_end_time:.2f} seconds")
+            # Convert Path objects to strings for JSON serialization
+            all_files_str = [str(file) for file in all_files]
+            dump_start_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_start_time: {dump_start_time:.2f} seconds")
+
+            with open(file_list_cache, 'w') as f:
+                json.dump(all_files_str, f)
+                print("Saved file list to cache.")
+            
+            dump_end_time = time.time()  # Record end time for data loader setup
+    
+            print(f"dump_end_time: {dump_end_time:.2f} seconds")
+
+        # Convert the file list to a JSON string to broadcast
+        all_files_json = json.dumps(all_files_str)
+    else:
+        all_files_json = None
+    all_files_json_list = [all_files_json]
+    if args.gpus > 1:
+        dist.broadcast_object_list(all_files_json_list, src=0)
+    all_files_json = all_files_json_list[0]
+
+    # Convert the JSON string back to a list
+    all_files_str = json.loads(all_files_json)
+    all_files = [Path(file) for file in all_files_str]
     
     if args.dataset_type=="brain_tumor":
     
@@ -132,10 +179,12 @@ def main():
         )
     
     elif args.dataset_type=="T1_all":
-        train_loader, val_loader =  prepare_dataloader_from_list(
+        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.autoencoder_train["batch_size"],
             args.autoencoder_train["patch_size"],
+            # base_dir= base_dir,
+            all_files= all_files, 
             randcrop=args.autoencoder_train["random_crop"],
             rank=rank,
             world_size=world_size,
@@ -153,6 +202,9 @@ def main():
 
     # Step 2: Define Autoencoder KL network and discriminator
     autoencoder = define_instance(args, "autoencoder_def").to(device)
+    def count_model_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print("count_model_parameters(model)", count_model_parameters(autoencoder))
     discriminator_norm = "INSTANCE"
     discriminator = PatchDiscriminator(
         spatial_dims=args.spatial_dims,
@@ -184,6 +236,7 @@ def main():
     # trained_g_path_last = os.path.join(args.autoencoder_dir,"autoencoder_last.pt")
     # trained_d_path_last = os.path.join(args.autoencoder_dir,"discriminator_last.pt")
     
+    # print("trained_d_path_last", trained_d_path_last)
 
     if rank == 0:
         Path(args.model_dir).mkdir(parents=True, exist_ok=True)
@@ -259,14 +312,16 @@ def main():
         
         # train_progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}/{n_epochs}")
     
-        # # for step, batch in train_progress_bar:
+        # for step, batch in train_progress_bar:
         for step, batch in enumerate(train_loader):
             if step%10==0 and rank==0:
                 print("Epoch:", epoch, ", step: ",step)
             
             # print("image.shape", batch["image"].shape)
             images = batch["image"].to(device)
-            del batch
+            # images = batch.to(device)
+            # print("images", images.shape)
+            
             # train Generator part
             optimizer_g.zero_grad(set_to_none=True)
             # print("images.shape",images.shape)
@@ -275,7 +330,6 @@ def main():
             recons_loss = intensity_loss(reconstruction, images)
             kl_loss = KL_loss(z_mu, z_sigma)
             p_loss = loss_perceptual(reconstruction.float(), images.float())
-            
             loss_g = recons_loss + kl_weight * kl_loss + perceptual_weight * p_loss
 
             if epoch > autoencoder_warm_up_n_epochs:
@@ -285,7 +339,6 @@ def main():
 
             loss_g.backward()
             optimizer_g.step()
-            torch.cuda.empty_cache()
 
             if epoch > autoencoder_warm_up_n_epochs:
                 # train Discriminator part
@@ -299,10 +352,13 @@ def main():
 
                 loss_d.backward()
                 optimizer_d.step()
-                
-                
 
-         
+            # update progress bar
+            # train_progress_bar.set_postfix({
+            #     'Loss': loss_g.item(),
+            #     'Recon Loss': recons_loss.item(),
+            #     'KL Loss': kl_loss.item()
+            # })
             # write train loss for each batch into tensorboard
             if rank == 0:
                 total_step += 1
@@ -355,6 +411,11 @@ def main():
                 #     break
                 with torch.no_grad():
                     reconstruction, z_mu, z_sigma = autoencoder(images)
+                    # print("reconstruction", reconstruction.size())
+                    # print("images", images.size())
+                    # images = images[:,:, 1:, 1:, 1:]
+                    # print("images", images.size())
+                    # print("loss_perceptual(reconstruction.float(), images.float())", loss_perceptual(reconstruction.float(), images.float()).shape)
                     
                     recons_loss = intensity_loss(
                         reconstruction.float(), images.float()
