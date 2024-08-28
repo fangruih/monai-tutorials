@@ -29,24 +29,26 @@ from torchvision import transforms as tfms
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-import torch
+def find_unique_non_binary_number(tensor):
+    # Flatten the tensor to make it easier to handle
+    flat_tensor = tensor.flatten()
 
-# def convert_tensor_values(tensor):
-#     mask_zero = tensor == 0
-#     mask_one = tensor == 1
+    # Get the unique elements in the tensor
+    unique_elements = torch.unique(flat_tensor)
 
-#     print("mask_zero", mask_zero)
-#     print("mask_one", mask_one)
-#     tensor_ori=tensor
-#     # Convert 0s to 1s and 1s to 0s using the masks
-#     tensor[mask_zero] = 1
-#     tensor[mask_one] = 0
-#     print("check equal",torch.equal(tensor_ori, tensor))
-#     return tensor
+    # Filter out the common elements (0 and 1)
+    # Since you mentioned there's only one number that's not 0 or 1, we directly find it
+    non_binary_number = [x.item() for x in unique_elements if x not in (0, 1)]
 
-import torch
+    # Check if we found exactly one unique number
+    if len(non_binary_number) == 1:
+        return non_binary_number[0]
+    else:
+        raise ValueError("Expected exactly one unique number that is not 0 or 1, but found multiple or none.")
 
-def convert_tensor_values(tensor):
+
+
+def convert_tensor_sex(tensor):
     # Assuming the tensor is on a CUDA device already
     mask_zero = tensor == 0
     mask_one = tensor == 1
@@ -71,6 +73,18 @@ def convert_tensor_values(tensor):
 
     return tensor, tensor_ori
 
+
+def convert_tensor_age(tensor,age):
+    # Clone the tensor to avoid modifying the original
+    new_tensor = tensor.clone()
+    
+    # Mask to identify elements that are not 0 or 1
+    mask = (new_tensor != 0) & (new_tensor != 1)
+    
+    # Apply the mask to set the desired elements to 10
+    new_tensor[mask] = age
+    
+    return new_tensor
 # Example to test this function
 # original_tensor = torch.tensor([[[0, 1, 2], [1, 0, 0], [1, 1, 1]]], device='cuda:0')
 # print("Original Tensor:\n", original_tensor)
@@ -127,17 +141,6 @@ def invert(
         latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
         latent_model_input = ddim_scheduler.scale_model_input(latent_model_input, t)
 
-        # Predict the noise residual
-        # noise_pred = pipe.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-        # noise_pred = inferer(
-        #                     inputs=latents ,
-        #                     autoencoder_model=inferer_autoencoder,
-        #                     diffusion_model=unet,
-        #                     noise=noise,
-        #                     timesteps=timesteps,
-        #                     condition=condition,
-        #                 )
-        # print("t", t)
         noise_pred= diffusion_model(latent_model_input, timesteps=t, context=original_condition)
         
 
@@ -151,9 +154,7 @@ def invert(
         current_t = max(0, t.item() - (1000 // num_inference_steps))  # t
         next_t = t  # min(999, t.item() + (1000//num_inference_steps)) # t+1
         alpha_t = ddim_scheduler.alphas_cumprod[current_t].to(device)
-        # print("alpha_t_next device:", scheduler.alphas_cumprod.device)
-        # print("next_t device:", next_t.device)
-        # print(scheduler.device)
+        
         ddim_scheduler.alphas_cumprod = ddim_scheduler.alphas_cumprod.to(device)
         alpha_t_next = ddim_scheduler.alphas_cumprod[next_t]
 
@@ -167,7 +168,7 @@ def invert(
 
     return torch.cat(intermediate_latents)
 
-def main():
+def main(ages):
     parser = argparse.ArgumentParser(description="PyTorch Latent Diffusion Model Inference")
     parser.add_argument(
         "-e",
@@ -209,9 +210,6 @@ def main():
     torch.set_num_threads(4)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # print_config()
-    # torch.backends.cudnn.benchmark = True
-    # torch.set_num_threads(4)
 
     env_dict = json.load(open(args.environment_file, "r"))
     config_dict = json.load(open(args.config_file, "r"))
@@ -286,7 +284,6 @@ def main():
     
 
     if args.dataset_type=="brain_tumor":
-    
         _, val_loader = prepare_dataloader(
             args,
             args.diffusion_train["batch_size"],
@@ -300,7 +297,6 @@ def main():
         )
         
     elif args.dataset_type=="hcp_ya_T1":
-        
         _, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.diffusion_train["batch_size"],
@@ -316,7 +312,6 @@ def main():
             with_conditioning=args.diffusion_def["with_conditioning"],
         )
     elif args.dataset_type=="T1_all":
-        # print("args.diffusion_train[conditioning_file],", args.diffusion_train["conditioning_file"])
         _, val_loader =  prepare_dataloader_extract_dataset_custom(
             args,
             args.diffusion_train["batch_size"],
@@ -366,22 +361,20 @@ def main():
     # Load a pipeline
     pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")#.to(device)
     # Set up a DDIM scheduler
-    # pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     ddim_scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     del pipe
-    # scheduler = DDIMScheduler.from_config(scheduler.config)
-    # Plot 'alpha' (alpha_bar in DDPM language, alphas_cumprod in Diffusers for clarity)
-    # timesteps = scheduler.timesteps.cpu()
-    # alphas = scheduler.alphas_cumprod[timesteps]
-    # plt.plot(timesteps, alphas, label="alpha_t")
-    # plt.legend()
+    
 
 
-
+    common_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    subfolder_path = os.path.join(args.output_dir, common_timestamp)
+    if not os.path.exists(subfolder_path):
+        os.makedirs(subfolder_path)
+        
     # for _ in range(args.num):
     for step, batch in enumerate(val_loader):
         print("step", step)
-        if step==1:
+        if step==2:
             break
         noise = torch.randn(noise_shape, dtype=torch.float32).to(device)
         print("noise", noise.shape)
@@ -389,8 +382,8 @@ def main():
         images = batch["image"].float().to(device)
         original_condition = batch["condition"].float().to(device)
         print("original_condition,", original_condition)
-        latent_clean = autoencoder.encode_stage_2_inputs(images) * 1.0
         
+        latent_clean = autoencoder.encode_stage_2_inputs(images) * 1.0
         
         inverted_latents = invert(start_latents=latent_clean, 
                                   original_condition=original_condition, 
@@ -398,45 +391,40 @@ def main():
                                   diffusion_model=diffusion_model,
                                   num_inference_steps=1000)
         
-        # print("inverted_latents.shape",inverted_latents.shape)
+        
         inverted_latents = inverted_latents[-1].unsqueeze(0)
-        print("inverted_latents.shape",inverted_latents.shape)
+        
         
         # converted_condition, tensor_ori= convert_tensor_values(original_condition)
-        # print("original_condition ", torch.equal(original_condition, tensor_ori))
-        # print("original_condition,", original_condition)
-        # print("tensor ori,", tensor_ori)
-        # print("converted_condition", converted_condition)
-        # print("original_condition ", torch.equal(original_condition, converted_condition))
-        # print("original_condition ", torch.equal(tensor_ori, converted_condition))
-        
-        
-        # print("converted_condition", converted_condition.shape)
         np.set_printoptions(threshold=1000)
-        # print("converted_condition", converted_condition[:,:,249])
-        
-        # print("converted_condition", converted_condition)
         print("original_condition", original_condition)
         
         
+        ori_age = int(find_unique_non_binary_number(original_condition))
         
+        ori_filename = os.path.join(subfolder_path, f"index_{step}_age_{ori_age}_ori")
+        ori_img = nib.Nifti1Image(images[0, 0, ...].unsqueeze(-1).cpu().numpy(), np.eye(4))
+        nib.save(ori_img, ori_filename)
         
-        with torch.no_grad():
-            synthetic_images = inferer.sample(
-                # input_noise=inverted_latents,
-                input_noise=inverted_latents,
-                autoencoder_model=autoencoder,
-                diffusion_model=diffusion_model,
-                scheduler=scheduler,
-                conditioning=original_condition, 
-                # conditioning=torch.tensor([[[138.,   1.,   0.]]]).to(device), 
-                
-            )
-        # with torch.no_grad():
-        #     synthetic_images = autoencoder.decode_stage_2_outputs(inverted_latents)
-        filename = os.path.join(args.output_dir, datetime.now().strftime("original_%Y%m%d_%H%M%S"))
-        final_img = nib.Nifti1Image(synthetic_images[0, 0, ...].unsqueeze(-1).cpu().numpy(), np.eye(4))
-        nib.save(final_img, filename)
+        for age in ages:
+            age_converted_condition = convert_tensor_age(original_condition,age=age)
+            print("age_converted_condition", age_converted_condition)
+            # ages=ages.append(ori_age)
+            with torch.no_grad():
+                synthetic_images = inferer.sample(
+                    input_noise=inverted_latents,
+                    autoencoder_model=autoencoder,
+                    diffusion_model=diffusion_model,
+                    scheduler=scheduler,
+                    conditioning=age_converted_condition, 
+                    
+                )
+            # with torch.no_grad():
+            #     synthetic_images = autoencoder.decode_stage_2_outputs(inverted_latents)
+            filename = os.path.join(subfolder_path, f"index_{step}_age_{age}")
+            final_img = nib.Nifti1Image(synthetic_images[0, 0, ...].unsqueeze(-1).cpu().numpy(), np.eye(4))
+            nib.save(final_img, filename)
+        
 
 
 if __name__ == "__main__":# Load a pipeline
@@ -447,6 +435,6 @@ if __name__ == "__main__":# Load a pipeline
         format="[%(asctime)s.%(msecs)03d][%(levelname)5s](%(name)s) - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    main()
+    main(ages=[12,120,142,160,180,240])
 
 

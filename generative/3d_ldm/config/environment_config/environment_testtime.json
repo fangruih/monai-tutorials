@@ -3,6 +3,7 @@
     "wandb_project_name_diffusion":"test_fangrui",
     "data_base_dir": "./dataset",
     "model_dir": "./trained_weights/draft_test",
+    "autoencoder_dir": "./trained_weights/t1_all/2024-08-16_22-52-10",
     "tfevent_path": "./tfevent/draft_test",
     "output_dir": "./output",
     "resume_ckpt": false

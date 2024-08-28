@@ -1,0 +1,11 @@
+{
+    "wandb_project_name_VAE":"check_encoding",
+    "wandb_project_name_diffusion":"diffusion_t1_all",
+    "data_base_dir": "./dataset",
+    "autoencoder_dir": "./trained_weights/t1_all/2024-08-26_16-28-11",
+    "diffusion_dir": "./trained_weights/t1_all",
+    "model_dir": "./trained_weights/t1_all",
+    "tfevent_path": "./tfevent/t1_all",
+    "output_dir": "./output/t1_all",
+    "resume_ckpt": true
+}

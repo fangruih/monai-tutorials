@@ -19,8 +19,9 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom,  prepare_file_list
-from visualize_image import visualize_one_slice_in_3d_image
+from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom, prepare_file_list, count_parameters
+from util.dataset_utils import prepare_dataloader_from_list
+from plot_test.visualize_image import visualize_one_slice_in_3d_image
 from datetime import datetime
 from create_dataset import *
 
@@ -43,7 +44,7 @@ def main():
     )
     parser.add_argument("-g", "--gpus", default=1, type=int, help="number of gpus per node")
     args = parser.parse_args()
-
+    
     # Step 0: configuration
     ddp_bool = args.gpus > 1  # whether to use distributed data parallel
     if ddp_bool:
@@ -91,54 +92,6 @@ def main():
         raise ValueError('Unknown cluster name. Please set the CLUSTER_NAME environment variable. e.g. export CLUSTER=NAME=sc')
 
     size_divisible = 2 ** (len(args.diffusion_def["num_channels"]) - 1)
-    # Step 1: set data loader
-    file_list_cache = Path(f"{base_dir}/{args.dataset_type}_file_list.json")
-    
-    file_list_start_time = time.time()  # Record end time for data loader setup
-    
-    print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
-    if rank == 0:
-        if file_list_cache.exists():
-            with open(file_list_cache, 'r') as f:
-                all_files_str = json.load(f)
-                print("Loaded file list from cache.")
-        else:
-            file_list_start_time = time.time()  # Record end time for data loader setup
-    
-            print(f"file_list_start_time: {file_list_start_time:.2f} seconds")
-
-            all_files = prepare_file_list(base_dir=base_dir, type=args.dataset_type)
-            
-            file_list_end_time = time.time()  # Record end time for data loader setup
-    
-            print(f"file_list_end_time: {file_list_end_time:.2f} seconds")
-            # Convert Path objects to strings for JSON serialization
-            all_files_str = [str(file) for file in all_files]
-            dump_start_time = time.time()  # Record end time for data loader setup
-    
-            print(f"dump_start_time: {dump_start_time:.2f} seconds")
-
-            with open(file_list_cache, 'w') as f:
-                json.dump(all_files_str, f)
-                print("Saved file list to cache.")
-            
-            dump_end_time = time.time()  # Record end time for data loader setup
-    
-            print(f"dump_end_time: {dump_end_time:.2f} seconds")
-
-        # Convert the file list to a JSON string to broadcast
-        all_files_json = json.dumps(all_files_str)
-    else:
-        all_files_json = None
-    all_files_json_list = [all_files_json]
-    if args.gpus > 1:
-        dist.broadcast_object_list(all_files_json_list, src=0)
-    all_files_json = all_files_json_list[0]
-
-    # Convert the JSON string back to a list
-    all_files_str = json.loads(all_files_json)
-    all_files = [Path(file) for file in all_files_str]
-    
 
     if args.dataset_type=="brain_tumor":
     
@@ -171,13 +124,10 @@ def main():
             with_conditioning=args.diffusion_def["with_conditioning"],
         )
     elif args.dataset_type=="T1_all":
-        print("args.diffusion_train[conditioning_file],", args.diffusion_train["conditioning_file"])
-        train_loader, val_loader =  prepare_dataloader_extract_dataset_custom(
+        train_loader, val_loader =  prepare_dataloader_from_list(
             args,
             args.diffusion_train["batch_size"],
             args.diffusion_train["patch_size"],
-            # base_dir= base_dir,
-            all_files= all_files, 
             randcrop=False,
             rank=rank,
             world_size=world_size,
@@ -185,7 +135,7 @@ def main():
             size_divisible=size_divisible,
             amp=True,
             with_conditioning=args.diffusion_def["with_conditioning"],
-            conditioning_file=args.diffusion_train["conditioning_file"],
+            
             cross_attention_dim=args.diffusion_def["cross_attention_dim"],
             expand_token_times= args.diffusion_train["expand_token_times"],
         )
@@ -259,11 +209,11 @@ def main():
     # args.model_dir= os.path.join(args.diffusion_dir,current_time)
     Path(args.model_dir).mkdir(parents=True, exist_ok=True)
     
-    # trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
-    # trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
+    trained_diffusion_path = os.path.join(args.model_dir, "diffusion_unet.pt")
+    trained_diffusion_path_last = os.path.join(args.model_dir, "diffusion_unet_last.pt")
     
-    trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
-    trained_diffusion_path_last = os.path.join(args.diffusion_dir, "diffusion_unet_last.pt")
+    # trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
+    # trained_diffusion_path_last = os.path.join(args.diffusion_dir, "diffusion_unet_last.pt")
 
     if args.resume_ckpt:
         map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
@@ -279,7 +229,8 @@ def main():
         beta_start=args.NoiseScheduler["beta_start"],
         beta_end=args.NoiseScheduler["beta_end"],
     )
-
+    num_params = count_parameters(unet)
+    print(f'The model has {num_params} trainable parameters.')
     if ddp_bool:
         autoencoder = DDP(autoencoder, device_ids=[device], output_device=rank, find_unused_parameters=True)
         unet = DDP(unet, device_ids=[device], output_device=rank, find_unused_parameters=True)
@@ -287,6 +238,9 @@ def main():
     # We define the inferer using the scale factor:
     inferer = LatentDiffusionInferer(scheduler, scale_factor=scale_factor)
 
+    # Count number of parameters
+    
+    
     # Step 3: training config
     optimizer_diff = torch.optim.Adam(params=unet.parameters(), lr=args.diffusion_train["lr"] * world_size)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer_diff, milestones=[100, 1000], gamma=0.1)
@@ -311,19 +265,26 @@ def main():
         
         # for step, batch in train_progress_bar:
         for step, batch in enumerate(train_loader):
+            # if step>2:
+            #     break
+            torch.cuda.empty_cache()
             if step%10 == 0  and rank == 0:
                 print("epoch:",epoch,", step:", step)
                 
             images = batch["image"].to(device)
+            # print("image.shape",images.shape)
             
             if args.diffusion_def["with_conditioning"]:
                 condition = batch["condition"].to(device)
+                if step<2:
+                    print("condition.shape",condition.shape)
+                    print("condition.shape",condition)
                 
-                # print("condition.shape",condition.shape)
                 # condition = torch.cat([item['condition'] for item in batch], dim=0).to(device)
             
             else: 
                 condition=None
+            
             optimizer_diff.zero_grad(set_to_none=True)
 
             with autocast(enabled=True):
@@ -366,8 +327,11 @@ def main():
                     "train_diffusion_loss_iter": loss.item(),
                     }, step=total_step * args.diffusion_train["batch_size"]*world_size)
             # train_progress_bar.set_postfix(loss=loss.item())
-
-        torch.cuda.empty_cache()
+            del images
+            del condition
+            del loss
+            torch.cuda.empty_cache()
+        
         # validation
         if epoch % val_interval == 0:
             
@@ -379,22 +343,21 @@ def main():
                     # compute val loss
                     condition=None
                     for step, batch in enumerate(val_loader):
+                        torch.cuda.empty_cache()
                         # if step>2:
                         #     break
                         images = batch["image"].to(device)
+                        
                         if args.diffusion_def["with_conditioning"]:
                             condition = batch["condition"].to(device)
-                            # print("condition.shape",condition.shape)
-                            # condition = torch.cat([item['condition'] for item in batch], dim=0).to(device)
-            
+                            if step<2:
+                                print("validation condition.shape",condition.shape)
+                                print("validation condition.shape",condition)
                         else: 
                             condition = None
                         noise_shape = [images.shape[0]] + list(z.shape[1:])
                         noise = torch.randn(noise_shape, dtype=images.dtype).to(device)
                         
-                        # print("list(z.shape[1:]", list(z.shape[1:]))
-                        # print("images", images.shape)
-                        # print()
 
                         timesteps = torch.randint(
                             0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device
@@ -405,8 +368,7 @@ def main():
                             inferer_autoencoder = autoencoder.module
                         else:
                             inferer_autoencoder = autoencoder
-                        # print("images", images.shape)
-
+                        
                         noise_pred = inferer(
                             inputs=images,
                             autoencoder_model=inferer_autoencoder,
@@ -453,7 +415,7 @@ def main():
                         if (epoch) % (2 * val_interval) == 0:  # time cost of synthesizing images is large
                             if condition!=None:
                                 condition= condition[0].unsqueeze(0)
-                                # print("syntesize base on condition ", condition)
+                                print("syntesize base on condition ", condition)
                                 print("condition shape", condition.shape)
                             
                             synthetic_images = inferer.sample(

@@ -243,7 +243,7 @@ def main():
         # print(autoencoder)
         # for param in autoencoder.module.encoder.parameters():
         #     param.requires_grad = False
-        # Detailed check of the encoder parameters
+        # # Detailed check of the encoder parameters
         # for name, param in autoencoder.module.named_parameters():
         #     print(f"Parameter: {name}, requires_grad={param.requires_grad}")
 
@@ -277,179 +277,57 @@ def main():
             
             # print("image.shape", batch["image"].shape)
             images = batch["image"].to(device)
-            del batch
-            # train Generator part
-            optimizer_g.zero_grad(set_to_none=True)
-            # print("images.shape",images.shape)
             
+            # reconstruction, z_mu, z_sigma = autoencoder(images)
             
-            reconstruction, z_mu, z_sigma = autoencoder(images)
-
-            recons_loss = intensity_loss(reconstruction, images)
-            kl_loss = KL_loss(z_mu, z_sigma)
-            p_loss = loss_perceptual(reconstruction.float(), images.float())
-            
-            loss_g = recons_loss + kl_weight * kl_loss + perceptual_weight * p_loss
-
-            if epoch > autoencoder_warm_up_n_epochs:
-                logits_fake = discriminator(reconstruction.contiguous().float())[-1]
-                generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
-                loss_g = loss_g + adv_weight * generator_loss
-
-            loss_g.backward()
-            optimizer_g.step()
-            torch.cuda.empty_cache()
-
-            if epoch > autoencoder_warm_up_n_epochs:
-                # train Discriminator part
-                optimizer_d.zero_grad(set_to_none=True)
-                logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
-                loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
-                logits_real = discriminator(images.contiguous().detach())[-1]
-                loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
-                discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
-                loss_d = adv_weight * discriminator_loss
-
-                loss_d.backward()
-                optimizer_d.step()
-                
-                
-
-         
-            # write train loss for each batch into tensorboard
-            if rank == 0:
-                total_step += 1
-                
-                train_metrics = {
-                    "train/recon_loss_iter": recons_loss.item(),  # Ensure to use .item() to log scalar values
-                    "train/kl_loss_iter": kl_loss.item(),
-                    "train/perceptual_loss_iter": p_loss.item()
-                }
-                tensorboard_writer.add_scalar("train_recon_loss_iter", recons_loss, total_step)
-                tensorboard_writer.add_scalar("train_kl_loss_iter", kl_loss, total_step)
-                tensorboard_writer.add_scalar("train_perceptual_loss_iter", p_loss, total_step)
-                if epoch > autoencoder_warm_up_n_epochs:
-                    train_metrics.update({
-                        "train/adv_loss_iter": generator_loss.item(),
-                        "train/fake_loss_iter": loss_d_fake.item(),
-                        "train/real_loss_iter": loss_d_real.item()
-                    })
-                    tensorboard_writer.add_scalar("train_adv_loss_iter", generator_loss, total_step)
-                    tensorboard_writer.add_scalar("train_fake_loss_iter", loss_d_fake, total_step)
-                    tensorboard_writer.add_scalar("train_real_loss_iter", loss_d_real, total_step)
-                wandb.log( train_metrics, step=total_step* args.autoencoder_train["batch_size"]*world_size)
-
-                if step ==1:
-                    for axis in range(3):
+            encoding_sample= autoencoder.encode_stage_2_inputs(images)
+            print("encoding_sample", encoding_sample.shape)
+            print("encoding_sample", encoding_sample[0, 0, ...].shape)
+            for axis in range(3):
                         
-                        
-                        train_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis) #.transpose([2, 1, 0])
-                        train_recon = visualize_one_slice_in_3d_image_greyscale(reconstruction[0, 0, ...], axis) #.transpose([2, 1, 0])
-                        
-                        wandb.log({
-                        f"train/image/gt_axis_{axis}": Image(train_img),
-                        f"train/image/recon_axis_{axis}": Image(train_recon)
-                    }, step=total_step*args.autoencoder_train["batch_size"]*world_size)
+                encoding_sample_img = visualize_one_slice_in_3d_image_greyscale(encoding_sample[0, 0, ...], axis) #.transpose([2, 1, 0])
+                # encode = visualize_one_slice_in_3d_image_greyscale(encode[0, 0, ...], axis) #.transpose([2, 1, 0])
+                # just_encoder = visualize_one_slice_in_3d_image_greyscale(just_encoder[0, 0, ...], axis) #.transpose([2, 1, 0])
                 
-            torch.cuda.empty_cache()
+                wandb.log({
+                            f"train/encode_with_sampling_axis_{axis}": Image(encoding_sample_img),
+                            # f"train/encode{axis}": Image(encode),
+                            # f"train/encoder{axis}": Image(just_encoder),
+                            
+                            }, step=total_step*args.autoencoder_train["batch_size"]*world_size)
+            del encoding_sample
+            encode,_ = autoencoder.encode(images)
+            print("encoding_sample", encode[0, 0, ...].shape)
+            for axis in range(3):
+                
+                # encoding_sample = visualize_one_slice_in_3d_image_greyscale(encoding_sample[0, 0, ...], axis) #.transpose([2, 1, 0])
+                encode_img = visualize_one_slice_in_3d_image_greyscale(encode[0, 0, ...], axis) #.transpose([2, 1, 0])
+                # just_encoder = visualize_one_slice_in_3d_image_greyscale(just_encoder[0, 0, ...], axis) #.transpose([2, 1, 0])
+                
+                wandb.log({
+                            # f"train/encode_with_sampling{axis}": Image(encoding_sample),
+                            f"train/encode_axis_{axis}": Image(encode_img),
+                            # f"train/encoder{axis}": Image(just_encoder),
+                            
+                            }, step=total_step*args.autoencoder_train["batch_size"]*world_size)
+            del encode
+            just_encoder = autoencoder.just_encoder(images)
+            for axis in range(3):
+                        
+                # encoding_sample = visualize_one_slice_in_3d_image_greyscale(encoding_sample[0, 0, ...], axis) #.transpose([2, 1, 0])
+                # encode = visualize_one_slice_in_3d_image_greyscale(encode[0, 0, ...], axis) #.transpose([2, 1, 0])
+                just_encoder_img = visualize_one_slice_in_3d_image_greyscale(just_encoder[0, 0, ...], axis) #.transpose([2, 1, 0])
+                
+                wandb.log({
+                            # f"train/encode_with_sampling{axis}": Image(encoding_sample),
+                            # f"train/encode{axis}": Image(encode),
+                            f"train/encoder_axis_{axis}": Image(just_encoder_img),
+                            
+                            }, step=total_step*args.autoencoder_train["batch_size"]*world_size)
+            del just_encoder
+            total_step += 1
         
-        # validation
-        if epoch % val_interval == 0:
-            autoencoder.eval()
-            val_recon_epoch_loss = 0
-            mses= 0
-            psnrs=0
-            ssims=0
-            mmd =0
-            for step, batch in enumerate(val_loader):
-                
-                images = batch["image"].to(device)
-                # if step ==2:
-                #     break
-                with torch.no_grad():
-                    reconstruction, z_mu, z_sigma = autoencoder(images)
-                    
-                    recons_loss = intensity_loss(
-                        reconstruction.float(), images.float()
-                    ) + perceptual_weight * loss_perceptual(reconstruction.float(), images.float())
-                    
-                # mses_add,psnrs_add,ssims_add,mmd_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
-                mses_add,psnrs_add,ssims_add = metrics_mean_mses_psnrs_ssims_mmd(reconstruction,images)
-                
-                mses= mses+mses_add
-                psnrs= psnrs+psnrs_add
-                ssims= ssims+ssims_add
-                # mmd= mmd+mmd_add
-                val_recon_epoch_loss += recons_loss.item()
-                
-
-            mses= mses/(step+1)
-            psnrs= psnrs/(step+1)
-            ssims= ssims/(step+1)
-            # mmd= mmd/(step+1)
-            
-            val_recon_epoch_loss = val_recon_epoch_loss / (step + 1)
-            # print("finish a process ")
-            if rank == 0:
-                # save last model
-                print(f"Epoch {epoch} val_recon_loss: {val_recon_epoch_loss}")
-                
-                
-                if ddp_bool:
-                    torch.save(autoencoder.module.state_dict(), trained_g_path_last_new)
-                    torch.save(discriminator.module.state_dict(), trained_d_path_last_new)
-                else:
-                    torch.save(autoencoder.state_dict(), trained_g_path_last_new)
-                    torch.save(discriminator.state_dict(), trained_d_path_last_new)
-                # save best model
-                if val_recon_epoch_loss < best_val_recon_epoch_loss and rank == 0:
-                    best_val_recon_epoch_loss = val_recon_epoch_loss
-                    if ddp_bool:
-                        torch.save(autoencoder.module.state_dict(), trained_g_path_new)
-                        torch.save(discriminator.module.state_dict(), trained_d_path_new)
-                    else:
-                        torch.save(autoencoder.state_dict(), trained_g_path_new)
-                        torch.save(discriminator.state_dict(), trained_d_path_new)
-                    print("Got best val recon loss.")
-                    print("Save trained autoencoder to", trained_g_path_new)
-                    print("Save trained discriminator to", trained_d_path_new)
-
-                # write val loss for each epoch into tensorboard
-                val_metrics = {
-                    "val/recon_loss": val_recon_epoch_loss,  # Ensure to use .item() to log scalar values
-                    "val/mses": mses,
-                    "val/psnrs": psnrs,
-                    "val/ssims": ssims,
-                    # "val/mmd": mmd,
-                }
-                # wandb.log(log_dict, step=total_step)
-                tensorboard_writer.add_scalar("val_recon_loss", val_recon_epoch_loss, epoch)
-                wandb.log(val_metrics, step=total_step * args.autoencoder_train["batch_size"]*world_size)
-
-                for axis in range(3):
-                    tensorboard_writer.add_image(
-                        "val_gt_" + str(axis),
-                        visualize_one_slice_in_3d_image(images[0, 0, ...], axis).transpose([2, 1, 0]),
-                        epoch,
-                    )
-                    tensorboard_writer.add_image(
-                        "val_recon_" + str(axis),
-                        visualize_one_slice_in_3d_image(reconstruction[0, 0, ...], axis).transpose([2, 1, 0]),
-                        epoch,
-                    )
-                    
-                    val_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis) #.transpose([2, 1, 0])
-                    val_recon = visualize_one_slice_in_3d_image_greyscale(reconstruction[0, 0, ...], axis) #.transpose([2, 1, 0])
-                    
-                    # print("images.shape",images.shape)
-                    # print("val_img.shape",val_img.shape)
-                    # print("val_recon.shape",val_recon.shape)
-
-                    wandb.log({
-                        f"val/image/gt_axis_{axis}": Image(val_img),
-                        f"val/image/recon_axis_{axis}": Image(val_recon)
-                    }, step=total_step*args.autoencoder_train["batch_size"]*world_size)
-                
+        
 
 if __name__ == "__main__":
     logging.basicConfig(
