@@ -240,7 +240,7 @@ def main():
         tensorboard_writer = SummaryWriter(tensorboard_path)
         
         print("autoencoder")
-        # print(autoencoder)
+        print(autoencoder)
         # for param in autoencoder.module.encoder.parameters():
         #     param.requires_grad = False
         # # Detailed check of the encoder parameters
