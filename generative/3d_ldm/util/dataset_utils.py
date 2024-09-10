@@ -193,7 +193,7 @@ def prepare_dataloader_from_list(
         train_ds, batch_size=batch_size, shuffle=(not ddp_bool), num_workers=0, pin_memory=False, sampler=train_sampler
     )
     val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False, sampler=val_sampler
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False, sampler=val_sampler
     )
     if rank == 0:
         # print(f'Image shape {train_ds[0]["image"]}')
