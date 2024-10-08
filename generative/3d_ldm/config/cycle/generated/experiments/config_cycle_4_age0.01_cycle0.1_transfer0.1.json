@@ -1,0 +1,98 @@
+{
+    "dataset_type": "T1_all",
+    "channel": 0,
+    "spacing": [
+        1.0,
+        1.0,
+        1.0
+    ],
+    "spatial_dims": 3,
+    "image_channels": 1,
+    "latent_channels": 8,
+    "autoencoder_def": {
+        "_target_": "generative.networks.nets.AutoencoderKL",
+        "spatial_dims": "@spatial_dims",
+        "in_channels": "$@image_channels",
+        "out_channels": "@image_channels",
+        "latent_channels": "@latent_channels",
+        "num_channels": [
+            64,
+            128,
+            256
+        ],
+        "num_res_blocks": 2,
+        "norm_num_groups": 32,
+        "norm_eps": 1e-06,
+        "attention_levels": [
+            false,
+            false,
+            false
+        ],
+        "with_encoder_nonlocal_attn": false,
+        "with_decoder_nonlocal_attn": false
+    },
+    "autoencoder_train": {
+        "batch_size": 1,
+        "patch_size": [
+            90,
+            90,
+            90
+        ],
+        "lr": 1e-05,
+        "perceptual_weight": 0.001,
+        "kl_weight": 1e-07,
+        "quantization_weight": 0.001,
+        "recon_loss": "l1",
+        "n_epochs": 500,
+        "val_interval": 1
+    },
+    "diffusion_def": {
+        "_target_": "generative.networks.nets.DiffusionModelUNet",
+        "spatial_dims": "@spatial_dims",
+        "in_channels": "@latent_channels",
+        "out_channels": "@latent_channels",
+        "num_channels": [
+            384,
+            512,
+            512
+        ],
+        "attention_levels": [
+            false,
+            true,
+            true
+        ],
+        "num_head_channels": [
+            0,
+            64,
+            64
+        ],
+        "num_res_blocks": 2,
+        "with_conditioning": true,
+        "cross_attention_dim": 250
+    },
+    "diffusion_train": {
+        "batch_size": 1,
+        "patch_size": [
+            160,
+            192,
+            176
+        ],
+        "lr": 1e-05,
+        "n_epochs": 5000,
+        "val_interval": 1,
+        "conditioning_file": "/simurgh/u/fangruih/monai-tutorials/generative/3d_ldm/conditioning/fmriresults01.txt",
+        "expand_token_times": 100,
+        "gradient_clipping": true,
+        "max_norm": 1.0
+    },
+    "NoiseScheduler": {
+        "num_train_timesteps": 1000,
+        "beta_start": 0.0015,
+        "beta_end": 0.0195
+    },
+    "cycle_param": {
+        "age_loss_weight": 0.01,
+        "cycle_loss_weight": 0.1,
+        "transfer_loss_weight": 0.1
+    }
+}
