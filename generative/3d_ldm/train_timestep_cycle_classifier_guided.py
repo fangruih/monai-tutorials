@@ -92,9 +92,11 @@ def main():
     from datetime import datetime
     # Generate a dynamic name based on the current date and time
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    run_name = f'cycle_{current_time}'
+    run_name = f'cycle_age{args.cycle_param["age_loss_weight"]}_cycle{args.cycle_param["cycle_loss_weight"]}_transfer{args.cycle_param["transfer_loss_weight"]}_penalty{args.cycle_param["weight_penalty_weight"]}_cycletransfer{args.cycle_param["cycle_transfer_weight"]}'
+    
     if rank ==0:
         wandb.init(project=args.wandb_project_name_cycle,name=run_name, config=args)
+        wandb.config.update({"current_time": current_time})
 
     set_determinism(42)
 
@@ -455,6 +457,7 @@ def main():
                     "train_transfer_loss_iter": transfer_loss.item(),
                     "train_age_loss_iter": age_loss.item(),
                     "train_cycle_loss_iter": cycle_loss.item(),
+                    "train_cycle_transfer_loss_iter": cycle_transfer_loss.item(),
                     "train_total_loss_iter": loss.item(),
                 }, step=total_step * args.diffusion_train["batch_size"]*world_size)
                 
@@ -469,6 +472,8 @@ def main():
                     "train_transfer_loss_iter": transfer_loss.item(),
                     "train_age_loss_iter": age_loss.item(),
                     "train_cycle_loss_iter": cycle_loss.item(),
+                    "train_cycle_transfer_loss_iter": cycle_transfer_loss.item(),
+                    "train_weight_loss_iter": weight_penalty_loss.item(),
                     "train_total_loss_iter": loss.item(),
                     
                 }
@@ -556,14 +561,21 @@ def main():
                         converted_img_80 = visualize_one_slice_in_3d_image(converted_image_80[0, 0, ...], axis)
                         converted_img_10 = visualize_one_slice_in_3d_image(converted_image_10[0, 0, ...], axis)
                         converted_img_y = visualize_one_slice_in_3d_image(converted_image_y[0, 0, ...], axis)
+                        img_y_0 = visualize_one_slice_in_3d_image(y_0_fake_image[0, 0, ...], axis)
+                        img_x_0 = visualize_one_slice_in_3d_image(images[0, 0, ...], axis)
+                        
                         
                         wandb.log({
                             f"train_original_image/original_axis_{axis}": wandb.Image(original_img),
                             f"train_generation_80/generated_axis_{axis}": wandb.Image(generated_img_80),   
                             f"train_generation_10/generated_axis_{axis}": wandb.Image(generated_img_10),
+                            
                             f"train_conversion_80/converted_80_axis_{axis}": wandb.Image(converted_img_80),
                             f"train_conversion_10/converted_10_axis_{axis}": wandb.Image(converted_img_10),
                             f"train_conversion_y/converted_y_axis_{axis}": wandb.Image(converted_img_y),
+                            
+                            f"train_intermediate/fake_y0_{axis}": wandb.Image(img_y_0),
+                            f"train_intermediate/real_x0_{axis}": wandb.Image(img_x_0),
                             "train_conversion/original_condition/age": original_age,
                             "train_conversion/original_condition/sex": original_sex,
                             "train_conversion/condition_y/age": new_age,
