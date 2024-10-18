@@ -23,11 +23,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn import Flatten
 import torch.nn as nn
+
+
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 
 from utils import define_instance, prepare_dataloader, setup_ddp, prepare_dataloader_extract_dataset_custom,  prepare_file_list, count_parameters
 from util.dataset_utils import prepare_dataloader_from_list
-from util.training_utils import invert, convert_tensor_age, print_gpu_usage
+from util.training_utils import invert, convert_tensor_age, print_gpu_memory
 from plot_test.visualize_image import visualize_one_slice_in_3d_image
 from datetime import datetime
 from create_dataset import *
@@ -92,7 +94,7 @@ def main():
     from datetime import datetime
     # Generate a dynamic name based on the current date and time
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    run_name = f'cycle_age{args.cycle_param["age_loss_weight"]}_cycle{args.cycle_param["cycle_loss_weight"]}_transfer{args.cycle_param["transfer_loss_weight"]}_penalty{args.cycle_param["weight_penalty_weight"]}_cycletransfer{args.cycle_param["cycle_transfer_weight"]}'
+    run_name = f'cycle_age{args.cycle_param["age_loss_weight"]}_cycle{args.cycle_param["cycle_loss_weight"]}_transferx{args.cycle_param["transfer_loss_weight_x"]}_transfery{args.cycle_param["transfer_loss_weight_y"]}_penalty{args.cycle_param["weight_penalty_weight"]}_cycletransfer{args.cycle_param["cycle_transfer_weight"]}'
     
     if rank ==0:
         wandb.init(project=args.wandb_project_name_cycle,name=run_name, config=args)
@@ -343,80 +345,78 @@ def main():
                         
                 
                 
-                # Step 1 : encode the original image to get clean latent 
+                # Step 1 : encode the original image to get clean latent x_0
                 if ddp_bool:
                     inferer_autoencoder = autoencoder.module
                 else:
                     inferer_autoencoder = autoencoder
                 with torch.no_grad():
                     x_0 = inferer_autoencoder.encode_stage_2_inputs(images) * scale_factor
-                torch.cuda.empty_cache()
+                
                 
                 
                 # Step 2: sample random noise x
                 noise_shape = [images.shape[0]] + list(z.shape[1:])
                 noise_x = torch.randn(noise_shape, dtype=images.dtype).to(device)
-                
                 timesteps = torch.randint(
                     0, inferer.scheduler.num_train_timesteps, (images.shape[0],), device=images.device
                 ).long()
                 
-                
                 # Step 3: Add noise to x_0 get x_t
                 x_t = inferer.scheduler.add_noise(original_samples=x_0, noise=noise_x, timesteps=timesteps)
                 
-                # Step 4: get a different condition 
+                # Step 4: get a random condition y
                 age_y = random.uniform(0, 90)
                 condition_y = convert_tensor_age(condition_x,age=age_y)
                 condition_80 = convert_tensor_age(condition_x,age=80)
                 condition_10 = convert_tensor_age(condition_x,age=10)
                 
                 # Step 5: predict noise and compare it to noise_x
-                if step % 2 == 0:
-                    predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y)
-                else:
-                    with torch.no_grad():
-                        predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y)
-                # predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y)
+                # if step % 2 == 0:
+                #     predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y)
+                # else:
+                #     with torch.no_grad():
+                #         predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y)
+                predicted_noise_x = unet(x=x_t, timesteps=timesteps, context=condition_y, use_checkpoint=True)
+                
                 
                 # Step 6: get fake y_0
-                
                 y_0_fake = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_x, timestep=timesteps, sample=x_t)
                 
                 # Step 7: Sample random noise y
                 noise_y = torch.randn(noise_shape, device=device).to(images.dtype)
-                # noise_y = torch.randn(noise_shape, dtype=images.dtype).to(device)
-
                 
-                # Step 8: 
+                
+                # Step 8: Add noise to y_0_fake get y_t
                 y_t = inferer.scheduler.add_noise(original_samples=y_0_fake, noise=noise_y, timesteps=timesteps)
                 
                 # Step 9: predict noise and compare it to noise_y
-                if step % 2 == 0:
-                    with torch.no_grad():
-                        predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x)
-                else:
-                    predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x)
-                # predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x)
+                # if step % 2 == 0:
+                #     with torch.no_grad():
+                #         predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x)
+                # else:
+                #     predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x)
+                predicted_noise_y = unet(x=y_t, timesteps=timesteps, context=condition_x, use_checkpoint=True)
+                
+                
+                # Step 10: predict x_0_fake
+                x_0_fake = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_y, timestep=timesteps, sample=y_t)
+                
                 
                 # Step 11: predict age
                 torch.cuda.empty_cache()
                 with torch.no_grad():
-                    y_0_fake_image = inferer_autoencoder.decode_stage_2_outputs(y_0_fake)   
+                    y_0_fake_image = inferer_autoencoder.decode_stage_2_outputs(y_0_fake)
 
-                predicted_age = age_regressor(y_0_fake_image)
+                    predicted_age = age_regressor(y_0_fake_image)
                 
                 age_y = torch.tensor(age_y, dtype=torch.float32, device=predicted_age.device).view_as(predicted_age)
                 
-                # Step 12: predict x_0_fake
-                
-                x_0_fake = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_y, timestep=timesteps, sample=y_t)
                 
                 # Steps 12: calculate losses
-                if step % 2 == 0:
-                    transfer_loss = F.mse_loss(predicted_noise_y.float(), noise_y.float()) + F.mse_loss(predicted_noise_x.float(), noise_x.float())
-                else:
-                    transfer_loss = F.mse_loss(predicted_noise_x.float(), noise_x.float()) + F.mse_loss(predicted_noise_y.float(), noise_y.float())
+                
+                transfer_loss_x = F.mse_loss(predicted_noise_x.float(), noise_x.float())
+                transfer_loss_y = F.mse_loss(predicted_noise_y.float(), noise_y.float()) 
                 age_loss = F.mse_loss(predicted_age, age_y)
                 cycle_loss = F.mse_loss(x_0, x_0_fake)
                 cycle_transfer_loss = F.mse_loss(predicted_noise_y.float() + predicted_noise_x.float() - noise_y.float() - noise_x.float(), torch.zeros_like(noise_y.float()))
@@ -431,16 +431,17 @@ def main():
 
                 
                 # Scale the losses by their respective weights and add them together
-                loss = args.cycle_param["transfer_loss_weight"]*transfer_loss + \
-                       args.cycle_param["age_loss_weight"]*age_loss + \
+                loss = args.cycle_param["age_loss_weight"]*age_loss + \
                        args.cycle_param["cycle_loss_weight"]*cycle_loss + \
                        args.cycle_param["weight_penalty_weight"]*weight_penalty_loss + \
-                       args.cycle_param["cycle_transfer_weight"]*cycle_transfer_loss
+                       args.cycle_param["cycle_transfer_weight"]*cycle_transfer_loss + \
+                       args.cycle_param["transfer_loss_weight_x"]*transfer_loss_x + \
+                       args.cycle_param["transfer_loss_weight_y"]*transfer_loss_y
                 
-                
-                
+            
             torch.cuda.empty_cache()
             scaler.scale(loss).backward()
+            
             
             if args.diffusion_train["gradient_clipping"] :
                 # scaler.unscale_(optimizer_diff)  # unscale the gradients of optimizer's assigned params in-place
@@ -454,11 +455,14 @@ def main():
                 total_step += 1
                 tensorboard_writer.add_scalar("train_diffusion_loss_iter", loss, total_step * args.diffusion_train["batch_size"]*world_size)
                 wandb.log({
-                    "train_transfer_loss_iter": transfer_loss.item(),
+                    "train_transfer_loss_x_iter": transfer_loss_x.item(),
+                    "train_transfer_loss_y_iter": transfer_loss_y.item(),
                     "train_age_loss_iter": age_loss.item(),
                     "train_cycle_loss_iter": cycle_loss.item(),
                     "train_cycle_transfer_loss_iter": cycle_transfer_loss.item(),
+                    "train_weight_penalty_loss_iter": weight_penalty_loss.item(),
                     "train_total_loss_iter": loss.item(),
+                    "timesteps": timesteps,
                 }, step=total_step * args.diffusion_train["batch_size"]*world_size)
                 
             # Store checkpoint every 1000 iterations
@@ -469,7 +473,8 @@ def main():
                     'step': total_step,
                     'model_state_dict': unet.module.state_dict() if ddp_bool else unet.state_dict(),
                     'optimizer_state_dict': optimizer_diff.state_dict(),
-                    "train_transfer_loss_iter": transfer_loss.item(),
+                    "train_transfer_loss_x_iter": transfer_loss_x.item(),
+                    "train_transfer_loss_y_iter": transfer_loss_y.item(),
                     "train_age_loss_iter": age_loss.item(),
                     "train_cycle_loss_iter": cycle_loss.item(),
                     "train_cycle_transfer_loss_iter": cycle_transfer_loss.item(),
@@ -483,7 +488,7 @@ def main():
             
         
             # After the existing training step
-            if step % 101 == 0 and rank == 0:
+            if step % 1000 == 0 and rank == 0:
                 unet.eval()
                 with torch.no_grad():
                     # Generate image from condition
@@ -510,7 +515,6 @@ def main():
                     )
 
 
-                    
                     # Convert image to old age 
                     converted_image_80, _, original_image, _ = conversion(
                         images,
@@ -550,6 +554,21 @@ def main():
                         device,
                         save_path=None
                     )
+                    # one step convert 
+                    predicted_noise_10 = unet(x=x_t, timesteps=timesteps, context=condition_10)
+                    predicted_noise_80 = unet(x=x_t, timesteps=timesteps, context=condition_80)
+                
+                    y_0_fake_10 = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_10, timestep=timesteps, sample=x_t)
+                    y_0_fake_80 = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_80, timestep=timesteps, sample=x_t)
+                    # decode y_0_fake_10 and y_0_fake_80
+                    y_0_fake_10_image = inferer_autoencoder.decode_stage_2_outputs(y_0_fake_10)
+                    y_0_fake_80_image = inferer_autoencoder.decode_stage_2_outputs(y_0_fake_80)
+                    
+                    
+                    
+                    x_0_fake_image = inferer_autoencoder.decode_stage_2_outputs(x_0_fake)
+                    
+                    
                     # Log images and conditions
                     original_age, original_sex = condition_x[0, 0, 0].item(), condition_x[0, 0, 1].item()
                     new_age, new_sex = condition_y[0, 0, 0].item(), condition_y[0, 0, 1].item()
@@ -563,7 +582,9 @@ def main():
                         converted_img_y = visualize_one_slice_in_3d_image(converted_image_y[0, 0, ...], axis)
                         img_y_0 = visualize_one_slice_in_3d_image(y_0_fake_image[0, 0, ...], axis)
                         img_x_0 = visualize_one_slice_in_3d_image(images[0, 0, ...], axis)
-                        
+                        y_0_fake_10_img = visualize_one_slice_in_3d_image(y_0_fake_10_image[0, 0, ...], axis)
+                        y_0_fake_80_img = visualize_one_slice_in_3d_image(y_0_fake_80_image[0, 0, ...], axis)
+                        x_0_fake_img = visualize_one_slice_in_3d_image(x_0_fake_image[0, 0, ...], axis)
                         
                         wandb.log({
                             f"train_original_image/original_axis_{axis}": wandb.Image(original_img),
@@ -574,8 +595,12 @@ def main():
                             f"train_conversion_10/converted_10_axis_{axis}": wandb.Image(converted_img_10),
                             f"train_conversion_y/converted_y_axis_{axis}": wandb.Image(converted_img_y),
                             
-                            f"train_intermediate/fake_y0_{axis}": wandb.Image(img_y_0),
-                            f"train_intermediate/real_x0_{axis}": wandb.Image(img_x_0),
+                            f"train_intermediate/fake_y0_age_random_axis_{axis}": wandb.Image(img_y_0),
+                            f"train_intermediate/real_x0_axis_{axis}": wandb.Image(img_x_0),
+                            
+                            f"train_intermediate/fake_y0_age_10_axis_{axis}": wandb.Image(y_0_fake_10_img),
+                            f"train_intermediate/fake_y0_age_80_axis_{axis}": wandb.Image(y_0_fake_80_img),
+                            f"train_intermediate/fake_x0_axis_{axis}": wandb.Image(x_0_fake_img),
                             "train_conversion/original_condition/age": original_age,
                             "train_conversion/original_condition/sex": original_sex,
                             "train_conversion/condition_y/age": new_age,
@@ -587,6 +612,7 @@ def main():
 
             del images, condition_x, condition_y, condition_80, condition_10, loss
             del x_0, x_t, y_t, y_0_fake, noise_x, noise_y, predicted_noise_x, predicted_noise_y, x_0_fake, predicted_age
+            
             torch.cuda.empty_cache()
             
         # validation
@@ -659,17 +685,20 @@ def main():
                         
                         # Step 10: predict x_0_fake
                         x_0_fake = inferer.scheduler.reversed_step_t0(model_output=predicted_noise_y, timestep=timesteps, sample=y_t)
-                        
+                       
                         # Steps 12: calculate losses
-                        if step % 2 == 0:
-                            transfer_loss = F.mse_loss(predicted_noise_y.float(), noise_y.float()) + F.mse_loss(predicted_noise_x.float(), noise_x.float())
-                        else:
-                            transfer_loss = F.mse_loss(predicted_noise_x.float(), noise_x.float()) + F.mse_loss(predicted_noise_y.float(), noise_y.float())
+                        transfer_loss_x = F.mse_loss(predicted_noise_x.float(), noise_x.float())
+                        transfer_loss_y = F.mse_loss(predicted_noise_y.float(), noise_y.float())
                         age_loss = F.mse_loss(predicted_age, age_y)
                         cycle_loss = F.mse_loss(x_0, x_0_fake)
+                        # weight_penalty_loss = weight_penalty_factor * weight_change
                         
                         # Scale the losses by their respective weights  and add them together
-                        val_loss = args.cycle_param["transfer_loss_weight"]*transfer_loss + args.cycle_param["age_loss_weight"]*age_loss + args.cycle_param["cycle_loss_weight"]*cycle_loss
+                        val_loss = args.cycle_param["transfer_loss_weight_x"]*transfer_loss_x + \
+                                   args.cycle_param["transfer_loss_weight_y"]*transfer_loss_y + \
+                                   args.cycle_param["age_loss_weight"]*age_loss + \
+                                   args.cycle_param["cycle_loss_weight"]*cycle_loss 
+                                #    args.cycle_param["weight_penalty_weight"]*weight_penalty_loss
                         val_recon_epoch_loss += val_loss
                     
                     
@@ -685,9 +714,11 @@ def main():
                     if rank == 0:
                         tensorboard_writer.add_scalar("val_diffusion_loss", val_recon_epoch_loss, epoch)
                         wandb.log({
-                            "val_transfer_loss": transfer_loss.item(),
+                            "val_transfer_loss_x": transfer_loss_x.item(),
+                            "val_transfer_loss_y": transfer_loss_y.item(),
                             "val_age_loss": age_loss.item(),
                             "val_cycle_loss": cycle_loss.item(),
+                            "val_weight_penalty_loss": weight_penalty_loss.item(),
                             "val_total_loss": val_loss.item(),
                             "val_diffusion_loss": val_recon_epoch_loss,
                             }, step=total_step * args.diffusion_train["batch_size"]*world_size)

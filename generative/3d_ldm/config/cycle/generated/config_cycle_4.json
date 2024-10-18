@@ -77,7 +77,7 @@
             192,
             176
         ],
-        "lr": 1e-05,
+        "lr": 1e-06,
         "n_epochs": 5000,
         "val_interval": 1,
         "conditioning_file": "/simurgh/u/fangruih/monai-tutorials/generative/3d_ldm/conditioning/fmriresults01.txt",
@@ -92,8 +92,10 @@
     },
     "cycle_param": {
         "age_loss_weight": 0.0001,
-        "cycle_loss_weight": 1,
-        "transfer_loss_weight": 1,
-        "weight_penalty_weight": 1
+        "cycle_loss_weight": 0,
+        "weight_penalty_weight": 0,
+        "cycle_transfer_weight": 0,
+        "transfer_loss_weight_x": 0,
+        "transfer_loss_weight_y": 0
     }
 }
