@@ -29,8 +29,7 @@ from monai.utils import set_determinism
 from utils import define_instance
 from util.training_utils import generate_random_condition
 
-
-def main():
+def parse_arguments():
     parser = argparse.ArgumentParser(description="PyTorch Latent Diffusion Model Inference")
     parser.add_argument(
         "-e",
@@ -53,7 +52,7 @@ def main():
     )
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     print_config()
     torch.backends.cudnn.benchmark = True
@@ -66,7 +65,11 @@ def main():
         setattr(args, k, v)
     for k, v in config_dict.items():
         setattr(args, k, v)
-
+    
+    return args
+def evaluate_with_random_condition(args, diffusion_evaluation_checkpoint):
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     set_determinism(42)
     
 
@@ -77,8 +80,9 @@ def main():
     autoencoder.load_state_dict(torch.load(trained_g_path))
 
     diffusion_model = define_instance(args, "diffusion_def").to(device)
-    trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
-    diffusion_model.load_state_dict(torch.load(trained_diffusion_path))
+    # trained_diffusion_path = os.path.join(args.diffusion_dir, "diffusion_unet.pt")
+    # diffusion_model.load_state_dict(torch.load(trained_diffusion_path))
+    diffusion_model.load_state_dict(diffusion_evaluation_checkpoint)
 
     # scheduler = DDPMScheduler(
     #     num_train_timesteps=args.NoiseScheduler["num_train_timesteps"],
@@ -97,9 +101,9 @@ def main():
     inferer = LatentDiffusionInferer(scheduler, scale_factor=1.0)
     
     
-    args.output_dir= os.path.join(args.output_dir,"direct_conditioned_generation", current_time)
+    args.evaluation_output_dir= os.path.join(args.evaluation_output_dir,"direct_conditioned_generation", common_timestamp)
     
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    Path(args.evaluation_output_dir).mkdir(parents=True, exist_ok=True)
     latent_shape = [p // 4 for p in args.diffusion_train["patch_size"]]
     noise_shape = [1, args.latent_channels] + latent_shape
 
@@ -132,6 +136,7 @@ def main():
         # filename = os.path.join(args.output_dir, datetime.now().strftime("synimg_%Y%m%d_%H%M%S"))
         final_img = nib.Nifti1Image(synthetic_images[0, 0, ...].unsqueeze(-1).cpu().numpy(), np.eye(4))
         nib.save(final_img, filename)
+    return args.evaluation_output_dir
 
 
 if __name__ == "__main__":
@@ -141,6 +146,7 @@ if __name__ == "__main__":
         format="[%(asctime)s.%(msecs)03d][%(levelname)5s](%(name)s) - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    main()
+    args = parse_arguments()    
+    evaluate_with_random_condition(args)
     
     
